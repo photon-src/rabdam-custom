@@ -104,6 +104,11 @@ def read_structure(resolved_input: ResolvedStructureInput) -> StructureData:
             f"Gemmi could not read structure file {path!s}: {error}"
         ) from error
 
+    if len(structure) != 1:
+        raise StructureReadError(
+            f"Expected a single-model structure, but found {len(structure)} models."
+        )
+
     atoms = _extract_atom_records(structure)
 
     if not atoms:
