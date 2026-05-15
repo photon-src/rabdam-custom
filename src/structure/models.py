@@ -26,6 +26,7 @@ class StructurePreparationOptions:
     resolve_altlocs: bool = True
 
     include_hetatm_in_selection: bool = False
+    include_protein_like_hetatm_in_selection: bool = False
     include_nucleic_acid_in_selection: bool = False
     require_protein_selection: bool = True
 

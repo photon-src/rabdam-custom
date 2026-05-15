@@ -4,49 +4,33 @@ Atom classification for RABDAM 3 structure preparation.
 
 from collections.abc import Iterable
 
+import gemmi
+
 from input.reader import AtomRecord
 from structure.filters import is_hydrogen
 from structure.models import PreparedAtom
 
 
-AMINO_ACIDS = frozenset(
+PROTEIN_COMPONENT_OVERRIDES = frozenset(
     {
-        "ALA",
-        "ARG",
-        "ASN",
-        "ASP",
-        "CYS",
-        "GLN",
-        "GLU",
-        "GLY",
-        "HIS",
-        "ILE",
-        "LEU",
-        "LYS",
-        "MET",
-        "PHE",
-        "PRO",
-        "SER",
-        "THR",
-        "TRP",
-        "TYR",
-        "VAL",
+        "ASH",
+        "CYM",
+        "CYX",
+        "GLH",
+        "HID",
+        "HIE",
+        "HIP",
+        "HSD",
+        "HSE",
+        "HSP",
     }
 )
 
 
-NUCLEOTIDES = frozenset(
+NUCLEIC_ACID_COMPONENT_OVERRIDES = frozenset(
     {
-        "A",
-        "C",
-        "G",
-        "U",
-        "T",
-        "DA",
-        "DC",
-        "DG",
-        "DT",
-        "DU",
+        "5MC",
+        "YYG",
     }
 )
 
@@ -79,8 +63,35 @@ def classify_atom(atom: AtomRecord) -> PreparedAtom:
     return PreparedAtom(
         record=atom,
         is_hydrogen=is_hydrogen(atom),
-        is_protein=component_name in AMINO_ACIDS,
-        is_nucleic_acid=component_name in NUCLEOTIDES,
-        is_solvent=component_name in SOLVENTS,
+        is_protein=is_protein_component(component_name),
+        is_nucleic_acid=is_nucleic_acid_component(component_name),
+        is_solvent=is_solvent_component(component_name),
         is_hetatm=record_type == "HETATM",
     )
+
+
+def is_protein_component(component_name: str) -> bool:
+    """Return True if a component should be treated as protein-like."""
+
+    if component_name in PROTEIN_COMPONENT_OVERRIDES:
+        return True
+
+    return gemmi.find_tabulated_residue(component_name).is_amino_acid()
+
+
+def is_nucleic_acid_component(component_name: str) -> bool:
+    """Return True if a component should be treated as nucleic-acid-like."""
+
+    if component_name in NUCLEIC_ACID_COMPONENT_OVERRIDES:
+        return True
+
+    return gemmi.find_tabulated_residue(component_name).is_nucleic_acid()
+
+
+def is_solvent_component(component_name: str) -> bool:
+    """Return True if a component should be treated as solvent."""
+
+    if component_name in SOLVENTS:
+        return True
+
+    return gemmi.find_tabulated_residue(component_name).is_water()

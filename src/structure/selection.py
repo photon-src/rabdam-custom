@@ -73,7 +73,9 @@ def is_default_bdamage_selection(
     Return True if an atom should be selected by default for BDamage.
     """
 
-    if atom.is_protein and not atom.is_hetatm:
+    if atom.is_protein and (
+        not atom.is_hetatm or options.include_protein_like_hetatm_in_selection
+    ):
         return True
 
     if options.include_hetatm_in_selection and atom.is_hetatm and not atom.is_solvent:
