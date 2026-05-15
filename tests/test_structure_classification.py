@@ -95,15 +95,15 @@ class SelectionTests(unittest.TestCase):
     def test_protein_atom_records_are_selected_by_default(self) -> None:
         self.assertEqual(self.selected_residue_names(("ALA",)), ("ALA",))
 
-    def test_protein_like_hetatm_records_are_excluded_by_default(self) -> None:
+    def test_protein_like_hetatm_records_are_selected_by_default(self) -> None:
         self.assertEqual(
             self.selected_residue_names(("MSE",), record_type="HETATM"),
-            (),
+            ("MSE",),
         )
 
-    def test_protein_like_hetatm_records_can_be_selected(self) -> None:
+    def test_protein_like_hetatm_records_can_be_excluded(self) -> None:
         options = StructurePreparationOptions(
-            include_protein_like_hetatm_in_selection=True
+            include_protein_like_hetatm_in_selection=False
         )
 
         self.assertEqual(
@@ -112,7 +112,7 @@ class SelectionTests(unittest.TestCase):
                 record_type="HETATM",
                 options=options,
             ),
-            ("MSE",),
+            (),
         )
 
     def test_component_remove_overrides_protein_like_hetatm_option(self) -> None:
@@ -130,7 +130,7 @@ class SelectionTests(unittest.TestCase):
             (),
         )
 
-    def test_component_add_overrides_default_protein_like_hetatm_exclusion(self) -> None:
+    def test_component_add_overrides_protein_like_hetatm_opt_out(self) -> None:
         options = StructurePreparationOptions(
             include_protein_like_hetatm_in_selection=False,
             add_component_names=frozenset({"MSE"}),
