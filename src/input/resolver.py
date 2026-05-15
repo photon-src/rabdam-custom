@@ -27,6 +27,20 @@ class InputResolutionError(ValueError):
     """Raised when RABDAM cannot understand or resolve a structure input."""
 
 
+class InputBatchResolutionError(InputResolutionError):
+    """Raised when one or more structure inputs fail during batch resolution."""
+
+    def __init__(self, errors: list[tuple[str, InputResolutionError]]):
+        self.errors = errors
+        summary = "\n".join(
+            f"- {raw_input!r}: {error}"
+            for raw_input, error in errors
+        )
+        super().__init__(
+            "One or more structure inputs could not be resolved:\n" + summary
+        )
+
+
 class StructureSourceType(str, Enum):
     """Where the structure input comes from."""
 
@@ -102,12 +116,26 @@ def resolve_many_structure_inputs(
 ) -> list[ResolvedStructureInput]:
     """
     Resolve multiple structure inputs in a batch run.
+
+    If any inputs fail, all inputs are attempted before raising a batch error.
     """
 
     if not raw_inputs:
         raise InputResolutionError("No structure inputs were provided.")
 
-    return [resolve_structure_input(raw_input) for raw_input in raw_inputs]
+    resolved_inputs: list[ResolvedStructureInput] = []
+    errors: list[tuple[str, InputResolutionError]] = []
+
+    for raw_input in raw_inputs:
+        try:
+            resolved_inputs.append(resolve_structure_input(raw_input))
+        except InputResolutionError as error:
+            errors.append((raw_input, error))
+
+    if errors:
+        raise InputBatchResolutionError(errors)
+
+    return resolved_inputs
 
 def is_valid_classic_pdb_id(value: str) -> bool:
     """
