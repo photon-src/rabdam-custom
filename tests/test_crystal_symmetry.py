@@ -157,6 +157,12 @@ class CrystalSymmetryTests(unittest.TestCase):
         with self.assertRaisesRegex(CrystalSymmetryError, "unit-cell parameters"):
             unit_cell_from_metadata(make_metadata(unit_cell_a=None))
 
+    def test_rejects_non_numeric_unit_cell_value(self) -> None:
+        with self.assertRaisesRegex(CrystalSymmetryError, "non-numeric"):
+            unit_cell_from_metadata(
+                make_metadata(unit_cell_a="not-a-number")  # type: ignore[arg-type]
+            )
+
     def test_rejects_invalid_unit_cell_length(self) -> None:
         with self.assertRaisesRegex(
             CrystalSymmetryError,

@@ -109,3 +109,20 @@ Consider wrapping symmetry-expanded coordinates into [0, 1) and implementing an 
 ```
 
 This should only be changed after comparing BDamage outputs against RABDAM 2 on a representative benchmark set.
+
+## Future Unit-Cell Validation Note
+
+`unit_cell_from_metadata()` currently validates that all unit-cell parameters are present, that lengths are positive, and that each angle is individually between 0 and 180 degrees.
+
+It does not currently validate that the three angles form a non-degenerate 3D cell with positive volume. A stricter future validation could check the standard unit-cell volume factor:
+
+```text
+1 - cos(alpha)^2 - cos(beta)^2 - cos(gamma)^2
++ 2 cos(alpha) cos(beta) cos(gamma)
+```
+
+and reject cells where this value is non-finite or less than/equal to zero.
+
+RABDAM 2 did not appear to perform this as an explicit up-front validation step. Its symmetry expansion delegated crystal-symmetry handling to CCTBX `expand_to_p1()`, while its later unit-cell translation computed the same volume factor directly and would fail with a raw math error for impossible angle combinations.
+
+For RABDAM 3, adding this check would be a robustness and error-message improvement for malformed/artificial metadata, not a RABDAM-2 compatibility requirement. It should be considered low priority unless validation is being tightened generally.

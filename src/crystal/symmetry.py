@@ -195,14 +195,19 @@ def unit_cell_from_metadata(metadata: StructureMetadata) -> UnitCellParameters:
             "Structure metadata is missing complete unit-cell parameters."
         )
 
-    unit_cell = UnitCellParameters(
-        a=float(unit_cell_a),
-        b=float(unit_cell_b),
-        c=float(unit_cell_c),
-        alpha=float(unit_cell_alpha),
-        beta=float(unit_cell_beta),
-        gamma=float(unit_cell_gamma),
-    )
+    try:
+        unit_cell = UnitCellParameters(
+            a=float(unit_cell_a),
+            b=float(unit_cell_b),
+            c=float(unit_cell_c),
+            alpha=float(unit_cell_alpha),
+            beta=float(unit_cell_beta),
+            gamma=float(unit_cell_gamma),
+        )
+    except (TypeError, ValueError) as error:
+        raise CrystalSymmetryError(
+            "Structure metadata contains non-numeric unit-cell parameters."
+        ) from error
 
     if unit_cell.a <= 0 or unit_cell.b <= 0 or unit_cell.c <= 0:
         raise CrystalSymmetryError(
