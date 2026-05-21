@@ -198,7 +198,7 @@ def _selected_atom_self_copy_is_counted(
 
     return any(
         neighbour_atom.source_atom_index == selected_atom.record.source_atom_index
-        and neighbour_atom.symmetry_operation_index == 1
+        and neighbour_atom.is_identity_symmetry_operation
         and neighbour_atom.translation_a == 0
         and neighbour_atom.translation_b == 0
         and neighbour_atom.translation_c == 0

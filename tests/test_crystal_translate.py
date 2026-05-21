@@ -23,6 +23,7 @@ def make_expanded_structure(
             source_atom_index=0,
             symmetry_operation_index=1,
             symmetry_operation="x,y,z",
+            is_identity_symmetry_operation=True,
             x=1.0,
             y=2.0,
             z=3.0,
@@ -151,6 +152,7 @@ class CrystalTranslateTests(unittest.TestCase):
             source_atom_index=3,
             symmetry_operation_index=2,
             symmetry_operation="-x,y,z",
+            is_identity_symmetry_operation=False,
             x=1.0,
             y=2.0,
             z=3.0,
@@ -161,6 +163,7 @@ class CrystalTranslateTests(unittest.TestCase):
         self.assertEqual(translated.unit_cell_atom_index, 7)
         self.assertEqual(translated.source_atom_index, 3)
         self.assertEqual(translated.symmetry_operation_index, 2)
+        self.assertFalse(translated.is_identity_symmetry_operation)
 
     def test_translation_vector_for_offsets_combines_abc_vectors(self) -> None:
         vectors = unit_cell_translation_vectors(

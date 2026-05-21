@@ -102,6 +102,7 @@ class CrystalSymmetryTests(unittest.TestCase):
         self.assertEqual(expanded.atoms[0].unit_cell_atom_index, 1)
         self.assertEqual(expanded.atoms[0].source_atom_index, 0)
         self.assertEqual(expanded.atoms[0].symmetry_operation, "x,y,z")
+        self.assertTrue(expanded.atoms[0].is_identity_symmetry_operation)
         self.assert_coordinates_almost_equal(
             coordinates_as_tuples(expanded),
             ((1.0, 2.0, 3.0),),
@@ -122,6 +123,10 @@ class CrystalSymmetryTests(unittest.TestCase):
                 "x+1/2,-y+1/2,-z",
                 "-x,y+1/2,-z+1/2",
             ),
+        )
+        self.assertEqual(
+            tuple(atom.is_identity_symmetry_operation for atom in expanded.atoms),
+            (True, False, False, False),
         )
         self.assert_coordinates_almost_equal(
             coordinates_as_tuples(expanded),

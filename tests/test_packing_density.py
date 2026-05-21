@@ -70,6 +70,7 @@ def make_translated_atom(
     y: float,
     z: float,
     source_atom_index: int | None = None,
+    is_identity_symmetry_operation: bool = True,
 ) -> TranslatedAtom:
     return TranslatedAtom(
         translated_atom_index=translated_atom_index,
@@ -80,6 +81,7 @@ def make_translated_atom(
             else source_atom_index
         ),
         symmetry_operation_index=1,
+        is_identity_symmetry_operation=is_identity_symmetry_operation,
         translation_a=0,
         translation_b=0,
         translation_c=0,

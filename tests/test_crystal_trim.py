@@ -76,6 +76,7 @@ def make_translated_atom(
         unit_cell_atom_index=translated_atom_index,
         source_atom_index=translated_atom_index - 1,
         symmetry_operation_index=1,
+        is_identity_symmetry_operation=True,
         translation_a=0,
         translation_b=0,
         translation_c=0,
