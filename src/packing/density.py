@@ -26,6 +26,10 @@ class PackingDensityError(ValueError):
     """Raised when RABDAM cannot calculate packing density."""
 
 
+SpatialCellKey = tuple[int, int, int]
+SpatialIndex = dict[SpatialCellKey, list[TranslatedAtom]]
+
+
 @dataclass(frozen=True)
 class PackingDensityAtomResult:
     """
@@ -129,6 +133,10 @@ def calculate_packing_density(
         )
 
     threshold_squared = float(packing_density_threshold) ** 2
+    spatial_index = _build_spatial_index(
+        neighbour_atom_tuple,
+        cell_size=float(packing_density_threshold),
+    )
 
     atom_results = tuple(
         PackingDensityAtomResult(
@@ -137,7 +145,11 @@ def calculate_packing_density(
             atom_serial=selected_atom.record.atom_serial,
             neighbour_count=_count_neighbours_excluding_selected_atom_self_copy(
                 selected_atom=selected_atom,
-                neighbour_atoms=neighbour_atom_tuple,
+                neighbour_atoms=_nearby_neighbour_atoms(
+                    selected_atom=selected_atom,
+                    spatial_index=spatial_index,
+                    cell_size=float(packing_density_threshold),
+                ),
                 threshold_squared=threshold_squared,
             ),
         )
@@ -152,10 +164,73 @@ def calculate_packing_density(
     )
 
 
+def _build_spatial_index(
+    neighbour_atoms: Iterable[TranslatedAtom],
+    *,
+    cell_size: float,
+) -> SpatialIndex:
+    """Bucket neighbour atoms into cubic cells with edge length cell_size."""
+
+    spatial_index: SpatialIndex = {}
+    for neighbour_atom in neighbour_atoms:
+        cell_key = _spatial_cell_key(
+            x=neighbour_atom.x,
+            y=neighbour_atom.y,
+            z=neighbour_atom.z,
+            cell_size=cell_size,
+        )
+        spatial_index.setdefault(cell_key, []).append(neighbour_atom)
+
+    return spatial_index
+
+
+def _nearby_neighbour_atoms(
+    *,
+    selected_atom: PreparedAtom,
+    spatial_index: SpatialIndex,
+    cell_size: float,
+) -> tuple[TranslatedAtom, ...]:
+    """
+    Return atoms from spatial cells that can contain threshold-distance neighbours.
+    """
+
+    selected_cell_key = _spatial_cell_key(
+        x=selected_atom.record.x,
+        y=selected_atom.record.y,
+        z=selected_atom.record.z,
+        cell_size=cell_size,
+    )
+    selected_cell_x, selected_cell_y, selected_cell_z = selected_cell_key
+
+    nearby_atoms: list[TranslatedAtom] = []
+    for cell_x in range(selected_cell_x - 1, selected_cell_x + 2):
+        for cell_y in range(selected_cell_y - 1, selected_cell_y + 2):
+            for cell_z in range(selected_cell_z - 1, selected_cell_z + 2):
+                nearby_atoms.extend(spatial_index.get((cell_x, cell_y, cell_z), ()))
+
+    return tuple(nearby_atoms)
+
+
+def _spatial_cell_key(
+    *,
+    x: float,
+    y: float,
+    z: float,
+    cell_size: float,
+) -> SpatialCellKey:
+    """Return the spatial-grid cell containing one Cartesian coordinate."""
+
+    return (
+        math.floor(x / cell_size),
+        math.floor(y / cell_size),
+        math.floor(z / cell_size),
+    )
+
+
 def _count_neighbours_excluding_selected_atom_self_copy(
     *,
     selected_atom: PreparedAtom,
-    neighbour_atoms: tuple[TranslatedAtom, ...],
+    neighbour_atoms: Iterable[TranslatedAtom],
     threshold_squared: float,
 ) -> int:
     """

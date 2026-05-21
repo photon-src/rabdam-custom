@@ -238,6 +238,35 @@ class PackingDensityTests(unittest.TestCase):
         self.assertEqual(result.atom_results[1].source_atom_index, 1)
         self.assertEqual(result.atom_results[1].atom_serial, 102)
 
+    def test_calculate_packing_density_counts_neighbour_across_spatial_cell_boundary(self) -> None:
+        selected_atoms = (
+            make_prepared_atom(source_atom_index=0, x=6.9, y=0.0, z=0.0),
+        )
+        neighbour_atoms = (
+            make_translated_atom(
+                translated_atom_index=1,
+                source_atom_index=0,
+                x=6.9,
+                y=0.0,
+                z=0.0,
+            ),
+            make_translated_atom(
+                translated_atom_index=2,
+                source_atom_index=1,
+                x=7.1,
+                y=0.0,
+                z=0.0,
+            ),
+        )
+
+        result = calculate_packing_density(
+            selected_atoms=selected_atoms,
+            neighbour_atoms=neighbour_atoms,
+            packing_density_threshold=7.0,
+        )
+
+        self.assertEqual(packing_density_counts_as_tuple(result), (1,))
+
     def test_calculate_packing_density_requires_counted_self_copy(self) -> None:
         selected_atoms = (
             make_prepared_atom(source_atom_index=0, x=0.0, y=0.0, z=0.0),
