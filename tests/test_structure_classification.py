@@ -1,6 +1,8 @@
 import unittest
+from unittest.mock import patch
 
 from input.reader import AtomRecord
+import structure.classify as classify_module
 from structure.classify import classify_atom
 from structure.models import StructurePreparationOptions
 from structure.selection import select_bdamage_atoms
@@ -36,6 +38,9 @@ class ClassificationTests(unittest.TestCase):
     def classify(self, residue_name: str, record_type: str = "ATOM"):
         return classify_atom(make_atom(residue_name, record_type=record_type))
 
+    def tearDown(self) -> None:
+        classify_module._classify_normalized_component.cache_clear()
+
     def test_standard_components_keep_existing_classification(self) -> None:
         self.assertTrue(self.classify("ALA").is_protein)
         self.assertTrue(self.classify("A").is_nucleic_acid)
@@ -66,6 +71,37 @@ class ClassificationTests(unittest.TestCase):
 
         self.assertFalse(atom.is_protein)
         self.assertFalse(atom.is_nucleic_acid)
+
+    def test_component_classification_is_combined_and_cached(self) -> None:
+        calls: list[str] = []
+
+        class FakeResidue:
+            def is_amino_acid(self) -> bool:
+                return False
+
+            def is_nucleic_acid(self) -> bool:
+                return False
+
+            def is_water(self) -> bool:
+                return False
+
+        def fake_find_tabulated_residue(component_name: str) -> FakeResidue:
+            calls.append(component_name)
+            return FakeResidue()
+
+        classify_module._classify_normalized_component.cache_clear()
+        with patch(
+            "structure.classify.gemmi.find_tabulated_residue",
+            side_effect=fake_find_tabulated_residue,
+        ):
+            first_atom = self.classify(" zzz ")
+            second_atom = self.classify("ZZZ")
+
+        self.assertEqual(calls, ["ZZZ"])
+        self.assertFalse(first_atom.is_protein)
+        self.assertFalse(first_atom.is_nucleic_acid)
+        self.assertFalse(first_atom.is_solvent)
+        self.assertEqual(first_atom.is_protein, second_atom.is_protein)
 
 
 class SelectionTests(unittest.TestCase):
