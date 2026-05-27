@@ -1,7 +1,7 @@
 from pathlib import Path
 import unittest
 
-from bdamage.workflow import (
+from rabdam.workflow import (
     BDamageWorkflowOptions,
     calculate_bdamage_for_prepared_structure,
 )
@@ -159,35 +159,35 @@ class BDamageWorkflowTests(unittest.TestCase):
             result.trimmed_block.original_atom_count,
         )
 
-    def test_fast_workflow_packing_density_matches_legacy_object_path(self) -> None:
+    def test_fast_workflow_packing_density_matches_object_path(self) -> None:
         prepared_structure = make_prepared_structure()
         result = calculate_bdamage_for_prepared_structure(
             prepared_structure=prepared_structure,
             options=make_workflow_options(),
         )
-        legacy_translated_block = translate_expanded_unit_cell(
+        object_translated_block = translate_expanded_unit_cell(
             result.symmetry_expanded_structure,
             translation_range=result.options.translation_range,
         )
-        legacy_trimmed_block = trim_translated_block_for_bdamage(
-            translated_block=legacy_translated_block,
+        object_trimmed_block = trim_translated_block_for_bdamage(
+            translated_block=object_translated_block,
             prepared_structure=prepared_structure,
             padding=result.options.packing_density_threshold,
         )
 
-        legacy_packing_density = calculate_bdamage_packing_density(
+        object_packing_density = calculate_bdamage_packing_density(
             prepared_structure=prepared_structure,
-            trimmed_block=legacy_trimmed_block,
+            trimmed_block=object_trimmed_block,
             packing_density_threshold=result.options.packing_density_threshold,
         )
 
         self.assertEqual(
             result.trimmed_block.atom_count,
-            len(legacy_trimmed_block.atoms),
+            len(object_trimmed_block.atoms),
         )
         self.assertEqual(
             packing_density_counts_as_tuple(result.packing_density_result),
-            packing_density_counts_as_tuple(legacy_packing_density),
+            packing_density_counts_as_tuple(object_packing_density),
         )
 
 

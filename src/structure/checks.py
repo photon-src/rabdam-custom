@@ -1,5 +1,5 @@
 """
-Validation checks for prepared RABDAM 3 structures.
+Validation checks for prepared RABDAM structures.
 """
 
 from structure.models import (

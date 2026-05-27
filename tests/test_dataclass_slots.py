@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 
 from bdamage.score import BDamageAtomInput, BDamageAtomResult, BDamageScoreResult
-from bdamage.workflow import BDamageWorkflowOptions, BDamageWorkflowResult
+from rabdam.workflow import BDamageWorkflowOptions, BDamageWorkflowResult
 from crystal.symmetry import (
     SymmetryExpandedAtom,
     SymmetryExpandedStructure,

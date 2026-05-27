@@ -1,1 +1,1 @@
-"""Tests for RABDAM 3."""
+"""Tests for RABDAM."""

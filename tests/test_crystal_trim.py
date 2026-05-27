@@ -163,33 +163,33 @@ def make_expanded_atom(
 
 
 class CrystalTrimTests(unittest.TestCase):
-    def assert_fused_block_matches_legacy_block(
+    def assert_fused_block_matches_object_block(
         self,
         *,
         fused: ArrayTrimmedCrystalBlock,
-        legacy,
+        object_block,
     ) -> None:
-        self.assertEqual(fused.original_atom_count, legacy.original_atom_count)
-        self.assertEqual(fused.reference_bounds, legacy.reference_bounds)
-        self.assertEqual(fused.trim_bounds, legacy.trim_bounds)
-        self.assertEqual(fused.padding, legacy.padding)
+        self.assertEqual(fused.original_atom_count, object_block.original_atom_count)
+        self.assertEqual(fused.reference_bounds, object_block.reference_bounds)
+        self.assertEqual(fused.trim_bounds, object_block.trim_bounds)
+        self.assertEqual(fused.padding, object_block.padding)
         self.assertEqual(
             trimmed_coordinates_as_tuples(fused),
-            trimmed_coordinates_as_tuples(legacy),
+            trimmed_coordinates_as_tuples(object_block),
         )
         self.assertEqual(
             tuple(fused.source_atom_indices.tolist()),
-            tuple(atom.source_atom_index for atom in legacy.atoms),
+            tuple(atom.source_atom_index for atom in object_block.atoms),
         )
         self.assertEqual(
             tuple(bool(flag) for flag in fused.is_identity_symmetry_operation.tolist()),
-            tuple(atom.is_identity_symmetry_operation for atom in legacy.atoms),
+            tuple(atom.is_identity_symmetry_operation for atom in object_block.atoms),
         )
         self.assertEqual(
             tuple(tuple(row) for row in fused.translation_offsets.tolist()),
             tuple(
                 (atom.translation_a, atom.translation_b, atom.translation_c)
-                for atom in legacy.atoms
+                for atom in object_block.atoms
             ),
         )
 
@@ -358,7 +358,7 @@ class CrystalTrimTests(unittest.TestCase):
             ),
         )
 
-    def test_fused_trim_matches_legacy_translate_then_trim_default_range(self) -> None:
+    def test_fused_trim_matches_object_path_default_range(self) -> None:
         expanded_structure = make_expanded_structure(
             atoms=(
                 make_expanded_atom(
@@ -391,7 +391,7 @@ class CrystalTrimTests(unittest.TestCase):
             make_prepared_atom(source_atom_index=0, x=0.0, y=0.0, z=0.0),
             make_prepared_atom(source_atom_index=1, x=10.0, y=5.0, z=5.0),
         )
-        legacy = trim_translated_block_to_reference_atoms(
+        object_block = trim_translated_block_to_reference_atoms(
             translated_block=translate_expanded_unit_cell(expanded_structure),
             reference_atoms=reference_atoms,
             padding=3.0,
@@ -403,9 +403,12 @@ class CrystalTrimTests(unittest.TestCase):
             padding=3.0,
         )
 
-        self.assert_fused_block_matches_legacy_block(fused=fused, legacy=legacy)
+        self.assert_fused_block_matches_object_block(
+            fused=fused,
+            object_block=object_block,
+        )
 
-    def test_fused_trim_matches_legacy_for_translation_range_zero(self) -> None:
+    def test_fused_trim_matches_object_path_for_translation_range_zero(self) -> None:
         expanded_structure = make_expanded_structure(
             atoms=(
                 make_expanded_atom(
@@ -428,7 +431,7 @@ class CrystalTrimTests(unittest.TestCase):
             make_prepared_atom(source_atom_index=0, x=0.0, y=0.0, z=0.0),
             make_prepared_atom(source_atom_index=1, x=10.0, y=10.0, z=10.0),
         )
-        legacy = trim_translated_block_to_reference_atoms(
+        object_block = trim_translated_block_to_reference_atoms(
             translated_block=translate_expanded_unit_cell(
                 expanded_structure,
                 translation_range=0,
@@ -444,11 +447,14 @@ class CrystalTrimTests(unittest.TestCase):
             translation_range=0,
         )
 
-        self.assert_fused_block_matches_legacy_block(fused=fused, legacy=legacy)
+        self.assert_fused_block_matches_object_block(
+            fused=fused,
+            object_block=object_block,
+        )
         self.assertEqual(fused.atom_count, 1)
         np.testing.assert_allclose(fused.coordinates[0], np.asarray((0.0, 5.0, 10.0)))
 
-    def test_fused_trim_matches_legacy_for_non_orthogonal_unit_cell(self) -> None:
+    def test_fused_trim_matches_object_path_for_non_orthogonal_unit_cell(self) -> None:
         expanded_structure = make_expanded_structure(
             atoms=(
                 make_expanded_atom(
@@ -479,7 +485,7 @@ class CrystalTrimTests(unittest.TestCase):
             make_prepared_atom(source_atom_index=0, x=-5.0, y=-5.0, z=-5.0),
             make_prepared_atom(source_atom_index=1, x=15.0, y=15.0, z=15.0),
         )
-        legacy = trim_translated_block_to_reference_atoms(
+        object_block = trim_translated_block_to_reference_atoms(
             translated_block=translate_expanded_unit_cell(expanded_structure),
             reference_atoms=reference_atoms,
             padding=2.0,
@@ -491,7 +497,10 @@ class CrystalTrimTests(unittest.TestCase):
             padding=2.0,
         )
 
-        self.assert_fused_block_matches_legacy_block(fused=fused, legacy=legacy)
+        self.assert_fused_block_matches_object_block(
+            fused=fused,
+            object_block=object_block,
+        )
 
     def test_empty_reference_atoms_raises(self) -> None:
         with self.assertRaises(CrystalTrimError):

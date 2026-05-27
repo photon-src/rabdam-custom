@@ -1,5 +1,5 @@
 """
-Atom classification for RABDAM 3 structure preparation.
+Atom classification for RABDAM structure preparation.
 """
 
 from collections.abc import Iterable

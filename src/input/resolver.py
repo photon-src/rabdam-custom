@@ -1,5 +1,5 @@
 """
-Resolve user-supplied structure inputs for RABDAM 3.
+Resolve user-supplied structure inputs for RABDAM.
 
 This module takes raw user input such as:
 

@@ -1,5 +1,5 @@
 """
-Read local structure files for RABDAM 3.
+Read local structure files for RABDAM.
 
 This module takes a resolved local structure input and reads the structure file
 using Gemmi.

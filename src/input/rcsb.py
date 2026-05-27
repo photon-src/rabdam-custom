@@ -1,5 +1,5 @@
 """
-Download RCSB/PDB structure files for RABDAM 3.
+Download RCSB/PDB structure files for RABDAM.
 
 This module takes a resolved RCSB/PDB ID input and downloads the corresponding
 mmCIF file to a local cache directory.
