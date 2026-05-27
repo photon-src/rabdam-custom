@@ -11,8 +11,9 @@ and decides whether each input is a local structure file or an RCSB/PDB ID.
 
 Resolution order:
 1. If the input exists as a local file, treat it as a local file
-2. Otherwise, if it looks like a classic PDB ID, treat it as an RCSB/PDB ID
-3. Otherwise, raise a clear error
+2. Otherwise, try a case-insensitive local filename match
+3. Otherwise, if it looks like a classic PDB ID, treat it as an RCSB/PDB ID
+4. Otherwise, raise a clear error
 """
 
 import os
@@ -85,8 +86,9 @@ def resolve_structure_input(raw_input: str) -> ResolvedStructureInput:
 
     Resolution order:
     1. If the input exists as a local path, treat it as a local file.
-    2. If not local, check whether it looks like a valid PDB ID.
-    3. Otherwise, raise a clear error.
+    2. If not local, try a case-insensitive local filename match.
+    3. If not local, check whether it looks like a valid PDB ID.
+    4. Otherwise, raise a clear error.
     """
 
     cleaned_input = _clean_raw_input(raw_input)
@@ -95,6 +97,13 @@ def resolve_structure_input(raw_input: str) -> ResolvedStructureInput:
     if possible_path.exists():
         return _resolve_local_file(
             cleaned_input,
+            original_input=raw_input,
+        )
+
+    case_insensitive_path = _find_case_insensitive_local_path(possible_path)
+    if case_insensitive_path is not None:
+        return _resolve_local_file(
+            str(case_insensitive_path),
             original_input=raw_input,
         )
 
@@ -254,3 +263,36 @@ def _expand_path(path_text: str) -> Path:
 
     expanded = os.path.expandvars(path_text)
     return Path(expanded).expanduser()
+
+
+def _find_case_insensitive_local_path(path: Path) -> Path | None:
+    """
+    Return a local path whose filename matches case-insensitively.
+
+    Exact paths are handled before this function is called. This fallback only
+    compares the final path component inside an existing parent directory, so it
+    avoids guessing across unrelated directory names.
+    """
+
+    parent = path.parent
+    if not parent.exists() or not parent.is_dir():
+        return None
+
+    requested_name = path.name.lower()
+    matches = [
+        candidate
+        for candidate in parent.iterdir()
+        if candidate.name.lower() == requested_name
+    ]
+
+    if not matches:
+        return None
+
+    if len(matches) > 1:
+        matching_names = ", ".join(sorted(candidate.name for candidate in matches))
+        raise InputResolutionError(
+            f"Local structure input {path!s} is ambiguous because multiple files "
+            f"match case-insensitively: {matching_names}."
+        )
+
+    return matches[0]
