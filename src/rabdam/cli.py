@@ -38,6 +38,19 @@ from structure.models import StructurePreparationOptions
 
 DEFAULT_OUTPUT_CSV = Path("rabdam_BDamage.csv")
 DEFAULT_CACHE_DIR = Path(".rabdam_cache") / "rcsb"
+CITATIONS_MESSAGE = """Please cite:
+
+RABDAM:
+  Shelley KL, Dixon TPE, Brooks-Bartlett JC & Garman EF (2018).
+  J Appl Cryst 51, 552-559.
+
+BDamage:
+  Gerstel M, Deane CM & Garman EF (2015).
+  J Synchrotron Radiat 22, 201-212.
+
+Bnet / Bnet percentile:
+  Shelley KL & Garman EF (2022).
+  Nat Commun 13, 1314."""
 MISSING_STRUCTURE_INPUT_MESSAGE = """rabdam: error: missing required argument: structure_input
 
 Usage:
@@ -129,6 +142,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="version",
         version=f"%(prog)s {__version__}",
         help="Show the program version and exit.",
+    )
+    general.add_argument(
+        "--citations",
+        action="store_true",
+        help="Print citation information and exit.",
     )
     general.add_argument(
         "-q",
@@ -252,8 +270,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--preview-count",
         metavar="INT",
         type=non_negative_int,
-        default=10,
-        help="Number of leading packing-density and BDamage values to print. Default: 10",
+        default=0,
+        help="Number of leading packing-density and BDamage values to print. Default: 0",
     )
 
     return parser
@@ -350,8 +368,12 @@ def run_from_args(
     *,
     stdout: TextIO = sys.stdout,
     stderr: TextIO = sys.stderr,
+    total_runtime_start: float | None = None,
 ) -> RabdamCliResult:
     """Run the BDamage workflow from parsed command-line arguments."""
+
+    if total_runtime_start is None:
+        total_runtime_start = perf_counter()
 
     workflow_options = workflow_options_from_args(args)
     preparation_options = preparation_options_from_args(args)
@@ -409,7 +431,13 @@ def run_from_args(
     )
 
     if not args.quiet:
-        print_summary(cli_result, preview_count=args.preview_count, stream=stdout)
+        total_runtime_seconds = perf_counter() - total_runtime_start
+        print_summary(
+            cli_result,
+            preview_count=args.preview_count,
+            total_runtime_seconds=total_runtime_seconds,
+            stream=stdout,
+        )
 
     return cli_result
 
@@ -432,25 +460,24 @@ def run_stage(
         result = callback()
     except Exception:
         elapsed = perf_counter() - start
-        print(f"{label} failed after {elapsed:.1f}s", file=stream, flush=True)
+        print(f"  failed after {elapsed:.1f}s", file=stream, flush=True)
         raise
 
     elapsed = perf_counter() - start
-    print(f"{label} done in {elapsed:.1f}s", file=stream, flush=True)
+    print(f"  done in {elapsed:.1f}s", file=stream, flush=True)
     return result
-
-
-def print_total_runtime(start: float, *, stream: TextIO) -> None:
-    """Print the total elapsed CLI runtime."""
-
-    elapsed = perf_counter() - start
-    print(f"Total runtime: {elapsed:.1f}s", file=stream, flush=True)
 
 
 def print_missing_structure_input_error(*, stream: TextIO) -> None:
     """Print a compact recovery message for missing structure input."""
 
     print(MISSING_STRUCTURE_INPUT_MESSAGE, file=stream)
+
+
+def print_citations(*, stream: TextIO) -> None:
+    """Print citation information for RABDAM outputs."""
+
+    print(CITATIONS_MESSAGE, file=stream)
 
 
 def write_bdamage_csv(
@@ -501,34 +528,41 @@ def print_summary(
     result: RabdamCliResult,
     *,
     preview_count: int,
+    total_runtime_seconds: float,
     stream: TextIO,
 ) -> None:
     """Print a compact successful-run summary."""
 
     workflow_result = result.workflow_result
+    print(file=stream)
+    print("Done.", file=stream)
+    print(file=stream)
     print(f"Input: {result.local_input.local_path}", file=stream)
     print(f"Output CSV: {result.output_csv}", file=stream)
+    print(file=stream)
+    print("Crystallographic expansion:", file=stream)
     print(
-        f"Selected atoms: {workflow_result.prepared_structure.report.selected_atom_count}",
-        file=stream,
-    )
-    print(f"Window size: {workflow_result.window_size}", file=stream)
-    print(
-        f"Symmetry-expanded atoms: {len(workflow_result.symmetry_expanded_structure.atoms)}",
-        file=stream,
-    )
-    print(
-        f"Translated atoms before trimming: {workflow_result.trimmed_block.original_atom_count}",
+        "  Symmetry-expanded atoms: "
+        f"{len(workflow_result.symmetry_expanded_structure.atoms)}",
         file=stream,
     )
     print(
-        f"Translated block materialized: {workflow_result.translated_block is not None}",
+        "  Translated atoms before trimming: "
+        f"{workflow_result.trimmed_block.original_atom_count}",
         file=stream,
     )
     print(
-        f"Trimmed neighbour atoms: {workflow_result.trimmed_block.atom_count}",
+        "  Neighbour-block atoms after trimming: "
+        f"{workflow_result.trimmed_block.atom_count}",
         file=stream,
     )
+    print(file=stream)
+    print("BDamage summary:", file=stream)
+    print(
+        f"  Selected atoms: {workflow_result.prepared_structure.report.selected_atom_count}",
+        file=stream,
+    )
+    print(f"  Window size: {workflow_result.window_size}", file=stream)
 
     if preview_count > 0:
         packing_density_counts = packing_density_counts_as_tuple(
@@ -537,10 +571,32 @@ def print_summary(
         bdamage_scores = bdamage_scores_as_tuple(
             workflow_result.bdamage_score_result
         )[:preview_count]
-        print(f"Packing-density counts, first {preview_count}:", file=stream)
-        print(packing_density_counts, file=stream)
-        print(f"BDamage scores, first {preview_count}:", file=stream)
-        print(bdamage_scores, file=stream)
+        print(file=stream)
+        print("Preview:", file=stream)
+        print(f"  Packing-density counts, first {preview_count}:", file=stream)
+        print(f"    {_format_int_values(packing_density_counts)}", file=stream)
+        print(f"  BDamage scores, first {preview_count}:", file=stream)
+        print(f"    {_format_float_values(bdamage_scores)}", file=stream)
+
+    if workflow_result.translated_block is not None:
+        print(file=stream)
+        print("Debug:", file=stream)
+        print("  Translated block materialized: True", file=stream)
+
+    print(file=stream)
+    print(f"Total runtime: {total_runtime_seconds:.1f}s", file=stream)
+
+
+def _format_int_values(values: Sequence[int]) -> str:
+    """Return integer preview values as a comma-separated string."""
+
+    return ", ".join(str(value) for value in values)
+
+
+def _format_float_values(values: Sequence[float]) -> str:
+    """Return float preview values as a comma-separated string."""
+
+    return ", ".join(f"{value:.3f}" for value in values)
 
 
 def main(
@@ -554,18 +610,24 @@ def main(
     start = perf_counter()
     args = parse_args(argv)
 
+    if args.citations:
+        print_citations(stream=stdout)
+        return 0
+
     if args.structure_input is None:
         print_missing_structure_input_error(stream=stderr)
         return 2
 
     try:
-        run_from_args(args, stdout=stdout, stderr=stderr)
+        run_from_args(
+            args,
+            stdout=stdout,
+            stderr=stderr,
+            total_runtime_start=start,
+        )
     except RABDAM_CLI_ERRORS as error:
         print(f"rabdam: error: {error}", file=stderr)
         return 1
-    finally:
-        if not args.quiet:
-            print_total_runtime(start, stream=stderr)
 
     return 0
 
