@@ -26,7 +26,7 @@ Run a local structure file:
 Run an RCSB/PDB entry by ID:
 
 ```bash
-./rabdam 2blx --cache-dir .rabdam_cache/rcsb
+./rabdam 1LYZ --cache-dir .rabdam_cache/rcsb
 ```
 
 Useful options:

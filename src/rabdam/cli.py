@@ -38,6 +38,17 @@ from structure.models import StructurePreparationOptions
 
 DEFAULT_OUTPUT_CSV = Path("rabdam_BDamage.csv")
 DEFAULT_CACHE_DIR = Path(".rabdam_cache") / "rcsb"
+MISSING_STRUCTURE_INPUT_MESSAGE = """rabdam: error: missing required argument: structure_input
+
+Usage:
+  rabdam STRUCTURE_INPUT [options]
+
+Examples:
+  rabdam example.cif
+  rabdam 1LYZ
+  rabdam example.cif -o rabdam_BDamage.csv
+
+Run 'rabdam --help' for all options."""
 
 CSV_FIELDNAMES = [
     "REC",
@@ -83,36 +94,69 @@ class RabdamCliResult:
     workflow_result: BDamageWorkflowResult
 
 
-def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    """Parse command-line arguments."""
+def _build_parser() -> argparse.ArgumentParser:
+    """Build the RABDAM command-line parser."""
 
     defaults = BDamageWorkflowOptions()
     parser = argparse.ArgumentParser(
         prog="rabdam",
+        usage="%(prog)s STRUCTURE_INPUT [options]",
         description="Run the RABDAM BDamage workflow for a structure file or PDB ID.",
+        add_help=False,
     )
-    parser.add_argument(
+    input_group = parser.add_argument_group("input")
+    general = parser.add_argument_group("general options")
+    output_cache = parser.add_argument_group("output and cache options")
+    bdamage = parser.add_argument_group("BDamage calculation parameters")
+    selection = parser.add_argument_group("selection options")
+    advanced = parser.add_argument_group("advanced/debugging options")
+
+    input_group.add_argument(
         "structure_input",
-        help="Path to a .pdb/.cif/.mmcif file, or a 4-character PDB ID such as 2blx.",
+        nargs="?",
+        metavar="STRUCTURE_INPUT",
+        help="Path to a .pdb/.cif/.mmcif file, or a 4-character PDB ID such as 1LYZ.",
     )
-    parser.add_argument(
+    general.add_argument(
+        "-h",
+        "--help",
+        action="help",
+        default=argparse.SUPPRESS,
+        help="Show this help message and exit.",
+    )
+    general.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+        help="Show the program version and exit.",
+    )
+    general.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="Suppress progress and summary output.",
+    )
+    output_cache.add_argument(
         "-o",
         "--output-csv",
+        metavar="PATH",
         default=str(DEFAULT_OUTPUT_CSV),
         help=f"Path for the per-atom BDamage CSV. Default: {DEFAULT_OUTPUT_CSV}",
     )
-    parser.add_argument(
+    output_cache.add_argument(
         "--cache-dir",
+        metavar="DIR",
         default=str(DEFAULT_CACHE_DIR),
         help=f"Directory for downloaded RCSB mmCIF files. Default: {DEFAULT_CACHE_DIR}",
     )
-    parser.add_argument(
+    output_cache.add_argument(
         "--overwrite-cache",
         action="store_true",
         help="Download RCSB inputs again even when a cached mmCIF exists.",
     )
-    parser.add_argument(
+    bdamage.add_argument(
         "--packing-density-threshold",
+        metavar="FLOAT",
         type=positive_float,
         default=defaults.packing_density_threshold,
         help=(
@@ -120,8 +164,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             f"Default: {defaults.packing_density_threshold}"
         ),
     )
-    parser.add_argument(
+    bdamage.add_argument(
         "--window-size-fraction",
+        metavar="FLOAT",
         type=fraction_float,
         default=defaults.window_size_fraction,
         help=(
@@ -129,91 +174,95 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             f"Default: {defaults.window_size_fraction}"
         ),
     )
-    parser.add_argument(
+    bdamage.add_argument(
         "--minimum-window-size",
+        metavar="INT",
         type=positive_int,
         default=defaults.minimum_window_size,
         help=f"Minimum BDamage sliding-window atom count. Default: {defaults.minimum_window_size}",
     )
-    parser.add_argument(
+    bdamage.add_argument(
         "--translation-range",
+        metavar="INT",
         type=non_negative_int,
         default=defaults.translation_range,
         help=(
-            "Whole unit-cell range translated in each crystal direction. "
+            "Number of unit-cell translations to include in each crystal direction. "
             f"Default: {defaults.translation_range}"
         ),
     )
-    parser.add_argument(
-        "--materialize-translated-block",
-        action="store_true",
-        help="Build the full translated crystal block for debugging.",
-    )
-    parser.add_argument(
+    selection.add_argument(
         "--keep-hydrogens",
         action="store_true",
         help="Keep hydrogen atoms during structure preparation.",
     )
-    parser.add_argument(
+    selection.add_argument(
         "--include-hetatm",
         action="store_true",
-        help="Allow all HETATM records to receive BDamage scores.",
+        help="Include HETATM records in the BDamage atom selection.",
     )
-    parser.add_argument(
+    selection.add_argument(
         "--include-nucleic-acid",
         action="store_true",
-        help="Allow nucleic-acid atoms to receive BDamage scores.",
+        help="Include nucleic-acid atoms in the BDamage atom selection.",
     )
-    parser.add_argument(
-        "--allow-non-protein-selection",
-        action="store_true",
-        help="Do not require the selected BDamage atoms to include protein atoms.",
-    )
-    parser.add_argument(
+    selection.add_argument(
         "--remove-atom-serial",
+        metavar="INT",
         action="append",
         default=[],
         type=positive_int,
         help="Remove an atom serial from the BDamage selection. May be used repeatedly.",
     )
-    parser.add_argument(
+    selection.add_argument(
         "--add-atom-serial",
+        metavar="INT",
         action="append",
         default=[],
         type=positive_int,
         help="Add an atom serial to the BDamage selection. May be used repeatedly.",
     )
-    parser.add_argument(
+    selection.add_argument(
         "--remove-component",
+        metavar="NAME",
         action="append",
         default=[],
         type=component_name,
         help="Remove a residue/component name from the BDamage selection.",
     )
-    parser.add_argument(
+    selection.add_argument(
         "--add-component",
+        metavar="NAME",
         action="append",
         default=[],
         type=component_name,
         help="Add a residue/component name to the BDamage selection.",
     )
-    parser.add_argument(
+    advanced.add_argument(
+        "--materialize-translated-block",
+        action="store_true",
+        help="Build the full translated crystal block for debugging.",
+    )
+    advanced.add_argument(
+        "--allow-non-protein-selection",
+        action="store_true",
+        help="Allow BDamage scoring when the selected atoms contain no protein atoms.",
+    )
+    advanced.add_argument(
         "--preview-count",
+        metavar="INT",
         type=non_negative_int,
         default=10,
         help="Number of leading packing-density and BDamage values to print. Default: 10",
     )
-    parser.add_argument(
-        "-q",
-        "--quiet",
-        action="store_true",
-        help="Suppress progress and summary output.",
-    )
-    parser.add_argument(
-        "--version",
-        action="version",
-        version=f"%(prog)s {__version__}",
-    )
+
+    return parser
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    """Parse command-line arguments."""
+
+    parser = _build_parser()
 
     return parser.parse_args(argv)
 
@@ -398,6 +447,12 @@ def print_total_runtime(start: float, *, stream: TextIO) -> None:
     print(f"Total runtime: {elapsed:.1f}s", file=stream, flush=True)
 
 
+def print_missing_structure_input_error(*, stream: TextIO) -> None:
+    """Print a compact recovery message for missing structure input."""
+
+    print(MISSING_STRUCTURE_INPUT_MESSAGE, file=stream)
+
+
 def write_bdamage_csv(
     *,
     output_path: Path,
@@ -498,6 +553,10 @@ def main(
 
     start = perf_counter()
     args = parse_args(argv)
+
+    if args.structure_input is None:
+        print_missing_structure_input_error(stream=stderr)
+        return 2
 
     try:
         run_from_args(args, stdout=stdout, stderr=stderr)

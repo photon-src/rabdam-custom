@@ -5,7 +5,7 @@ This module takes raw user input such as:
 
     "model.cif"
     "model.pdb"
-    "2blx"
+    "1LYZ"
 
 and decides whether each input is a local structure file or an RCSB/PDB ID.
 
@@ -116,7 +116,7 @@ def resolve_structure_input(raw_input: str) -> ResolvedStructureInput:
     raise InputResolutionError(
         f"Could not resolve structure input {raw_input!r}.\n"
         "Expected an existing local .cif, .mmcif, or .pdb file "
-        "or a classic 4-character PDB ID such as 2blx."
+        "or a classic 4-character PDB ID such as 1LYZ."
     )
 
 
@@ -228,7 +228,7 @@ def _resolve_rcsb_id(
     if not is_valid_classic_pdb_id(cleaned_id):
         raise InputResolutionError(
             f"Invalid classic PDB ID: {structure_id!r}.\n"
-            "Expected a 4-character ID such as 2blx, 1abc, or 7xyz."
+            "Expected a 4-character ID such as 1LYZ, 1ABC, or 7XYZ."
         )
 
     return ResolvedStructureInput(

@@ -50,20 +50,20 @@ class ResolveManyStructureInputsTests(unittest.TestCase):
             structure_path.write_text("data_model\n")
 
             resolved_inputs = resolve_many_structure_inputs(
-                [str(structure_path), "2blx"]
+                [str(structure_path), "1lyz"]
             )
 
         self.assertEqual(len(resolved_inputs), 2)
         self.assertEqual(resolved_inputs[0].source_type, StructureSourceType.LOCAL_FILE)
         self.assertEqual(resolved_inputs[1].source_type, StructureSourceType.RCSB_ID)
-        self.assertEqual(resolved_inputs[1].structure_id, "2BLX")
+        self.assertEqual(resolved_inputs[1].structure_id, "1LYZ")
 
     def test_collects_all_resolution_errors(self) -> None:
         with self.assertRaises(InputBatchResolutionError) as context:
             resolve_many_structure_inputs(
                 [
                     "not-an-input",
-                    "2blx",
+                    "1lyz",
                     "",
                     "also-bad",
                 ]

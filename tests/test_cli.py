@@ -9,6 +9,8 @@ from bdamage.score import BDamageAtomResult, BDamageScoreResult
 from input.reader import AtomRecord, StructureMetadata
 from input.resolver import StructureFileFormat
 from rabdam.cli import (
+    MISSING_STRUCTURE_INPUT_MESSAGE,
+    _build_parser,
     main,
     parse_args,
     preparation_options_from_args,
@@ -153,6 +155,94 @@ class CliArgumentTests(unittest.TestCase):
         self.assertEqual(stdout.getvalue(), "")
         self.assertIn("rabdam: error:", stderr.getvalue())
         self.assertIn("Could not resolve structure input", stderr.getvalue())
+
+    def test_missing_input_returns_short_recovery_error(self) -> None:
+        stdout = StringIO()
+        stderr = StringIO()
+
+        with patch("rabdam.cli.run_from_args") as run_from_args:
+            exit_code = main([], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(stderr.getvalue(), f"{MISSING_STRUCTURE_INPUT_MESSAGE}\n")
+        self.assertNotIn("--materialize-translated-block", stderr.getvalue())
+        self.assertNotIn("Total runtime", stderr.getvalue())
+        run_from_args.assert_not_called()
+
+    def test_quiet_missing_input_returns_short_recovery_error(self) -> None:
+        stdout = StringIO()
+        stderr = StringIO()
+
+        with patch("rabdam.cli.run_from_args") as run_from_args:
+            exit_code = main(["--quiet"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(stderr.getvalue(), f"{MISSING_STRUCTURE_INPUT_MESSAGE}\n")
+        self.assertNotIn("Total runtime", stderr.getvalue())
+        run_from_args.assert_not_called()
+
+    def test_help_is_grouped_by_option_tier(self) -> None:
+        help_text = _build_parser().format_help()
+
+        self.assertIn("usage: rabdam STRUCTURE_INPUT [options]", help_text)
+        self.assertIn("input:", help_text)
+        self.assertIn("general options:", help_text)
+        self.assertIn("output and cache options:", help_text)
+        self.assertIn("BDamage calculation parameters:", help_text)
+        self.assertIn("selection options:", help_text)
+        self.assertIn("advanced/debugging options:", help_text)
+
+        input_start = help_text.index("input:")
+        general_start = help_text.index("general options:")
+        output_cache_start = help_text.index("output and cache options:")
+        bdamage_start = help_text.index("BDamage calculation parameters:")
+        selection_start = help_text.index("selection options:")
+        advanced_start = help_text.index("advanced/debugging options:")
+
+        input_help = help_text[input_start:general_start]
+        general_help = help_text[general_start:output_cache_start]
+        output_cache_help = help_text[output_cache_start:bdamage_start]
+        bdamage_help = help_text[bdamage_start:selection_start]
+        selection_help = help_text[selection_start:advanced_start]
+        advanced_help = help_text[advanced_start:]
+        normalized_bdamage_help = " ".join(bdamage_help.split())
+        normalized_selection_help = " ".join(selection_help.split())
+        normalized_advanced_help = " ".join(advanced_help.split())
+
+        self.assertIn("STRUCTURE_INPUT", input_help)
+        self.assertIn("-h, --help", general_help)
+        self.assertIn("Show this help message and exit.", general_help)
+        self.assertIn("--version", general_help)
+        self.assertIn("Show the program version and exit.", general_help)
+        self.assertIn("-q, --quiet", general_help)
+        self.assertIn("-o PATH, --output-csv PATH", output_cache_help)
+        self.assertIn("--cache-dir DIR", output_cache_help)
+        self.assertIn("--overwrite-cache", output_cache_help)
+        self.assertIn("--packing-density-threshold FLOAT", bdamage_help)
+        self.assertIn("--translation-range INT", bdamage_help)
+        self.assertIn(
+            "Number of unit-cell translations to include in each crystal direction.",
+            normalized_bdamage_help,
+        )
+        self.assertIn("--keep-hydrogens", selection_help)
+        self.assertIn(
+            "Include HETATM records in the BDamage atom selection.",
+            normalized_selection_help,
+        )
+        self.assertIn(
+            "Include nucleic-acid atoms in the BDamage atom selection.",
+            normalized_selection_help,
+        )
+        self.assertIn("--remove-component NAME", selection_help)
+        self.assertIn("--materialize-translated-block", advanced_help)
+        self.assertIn("--allow-non-protein-selection", advanced_help)
+        self.assertIn(
+            "Allow BDamage scoring when the selected atoms contain no protein atoms.",
+            normalized_advanced_help,
+        )
+        self.assertIn("--preview-count INT", advanced_help)
 
     def test_success_reports_total_runtime(self) -> None:
         stdout = StringIO()
