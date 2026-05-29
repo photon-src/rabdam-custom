@@ -129,7 +129,7 @@ def discover_pdb_redo_candidates(
     )
 
     return _build_discovery_result(
-        possible_candidates,
+        sorted(possible_candidates, key=_path_sort_key),
         require_data_json=require_data_json,
     )
 
@@ -231,7 +231,7 @@ def _iter_final_cif_paths_recursive(root: Path) -> Iterator[Path]:
 
 
 def _iter_final_cif_paths_flat(root: Path) -> Iterator[Path]:
-    for entry_dir in root.iterdir():
+    for entry_dir in sorted(root.iterdir(), key=_path_sort_key):
         if not entry_dir.is_dir():
             continue
 
@@ -265,6 +265,10 @@ def _skip_sort_key(skip: PdbRedoDiscoverySkip) -> tuple[str, str, str]:
         skip.reason.value,
         str(skip.path),
     )
+
+
+def _path_sort_key(path: Path) -> str:
+    return str(path)
 
 
 __all__ = [
