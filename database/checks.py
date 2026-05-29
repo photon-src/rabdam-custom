@@ -113,6 +113,18 @@ def read_pdb_redo_structure_checks(
     block = document[0] if len(document) else None
     warnings: list[str] = []
 
+    if len(structure) == 0:
+        raise PdbRedoStructureCheckError(
+            f"PDB-REDO final mmCIF contains no models: {final_cif_path}"
+        )
+
+    model = structure[0]
+    if len(structure) > 1:
+        warnings.append(
+            "Structure contains multiple models; structural checks use only "
+            "the first model."
+        )
+
     experimental_methods = _read_experimental_methods(block)
     entity_polymer_types = _read_entity_polymer_types(block)
 
@@ -124,11 +136,11 @@ def read_pdb_redo_structure_checks(
             "Could not read _entity_poly.type values; protein/nucleic-acid "
             "classification falls back to residue-name heuristics."
         )
-        has_protein = _structure_has_protein_like_residue(structure)
-        has_nucleic_acid = _structure_has_nucleic_acid_like_residue(structure)
+        has_protein = _model_has_protein_like_residue(model)
+        has_nucleic_acid = _model_has_nucleic_acid_like_residue(model)
 
-    asp_glu_info = _collect_asp_glu_info(structure)
-    b_factor_info = _collect_b_factor_info(structure)
+    asp_glu_info = _collect_asp_glu_info(model)
+    b_factor_info = _collect_b_factor_info(model)
 
     return PdbRedoStructureChecks(
         pdb_id=candidate.pdb_id,
@@ -166,32 +178,31 @@ class _BFactorInfo:
     protein_atom_count: int
 
 
-def _collect_asp_glu_info(structure: gemmi.Structure) -> _AspGluInfo:
+def _collect_asp_glu_info(model: gemmi.Model) -> _AspGluInfo:
     carboxyl_oxygen_count = 0
     residue_count = 0
     bad_occupancy_residue_keys: list[str] = []
 
-    for model in structure:
-        for chain in model:
-            for residue in chain:
-                residue_name = residue.name.upper()
-                if residue_name not in _ASP_GLU_RESIDUE_NAMES:
-                    continue
+    for chain in model:
+        for residue in chain:
+            residue_name = residue.name.upper()
+            if residue_name not in _ASP_GLU_RESIDUE_NAMES:
+                continue
 
-                residue_count += 1
-                residue_key = _residue_key(model, chain, residue)
+            residue_count += 1
+            residue_key = _residue_key(model, chain, residue)
 
-                carboxyl_atoms = [
-                    atom
-                    for atom in residue
-                    if atom.name.strip().upper() in _ASP_GLU_CARBOXYL_OXYGEN_NAMES
-                ]
-                carboxyl_oxygen_count += len(carboxyl_atoms)
+            carboxyl_atoms = [
+                atom
+                for atom in residue
+                if atom.name.strip().upper() in _ASP_GLU_CARBOXYL_OXYGEN_NAMES
+            ]
+            carboxyl_oxygen_count += len(carboxyl_atoms)
 
-                if _residue_has_total_carboxyl_oxygen_occupancy_below_one(
-                    carboxyl_atoms
-                ):
-                    bad_occupancy_residue_keys.append(residue_key)
+            if _residue_has_total_carboxyl_oxygen_occupancy_below_one(
+                carboxyl_atoms
+            ):
+                bad_occupancy_residue_keys.append(residue_key)
 
     return _AspGluInfo(
         carboxyl_oxygen_count=carboxyl_oxygen_count,
@@ -231,27 +242,26 @@ def _residue_has_total_carboxyl_oxygen_occupancy_below_one(
     )
 
 
-def _collect_b_factor_info(structure: gemmi.Structure) -> _BFactorInfo:
+def _collect_b_factor_info(model: gemmi.Model) -> _BFactorInfo:
     atom_count = 0
     non_hydrogen_atom_count = 0
     protein_atom_count = 0
     protein_b_values: list[float] = []
 
-    for model in structure:
-        for chain in model:
-            for residue in chain:
-                is_protein_residue = _is_protein_like_residue_name(residue.name)
+    for chain in model:
+        for residue in chain:
+            is_protein_residue = _is_protein_like_residue_name(residue.name)
 
-                for atom in residue:
-                    atom_count += 1
+            for atom in residue:
+                atom_count += 1
 
+                if not _is_hydrogen(atom):
+                    non_hydrogen_atom_count += 1
+
+                if is_protein_residue:
+                    protein_atom_count += 1
                     if not _is_hydrogen(atom):
-                        non_hydrogen_atom_count += 1
-
-                    if is_protein_residue:
-                        protein_atom_count += 1
-                        if not _is_hydrogen(atom):
-                            protein_b_values.append(float(atom.b_iso))
+                        protein_b_values.append(float(atom.b_iso))
 
     has_nonflat_protein_b_factors = _has_nonflat_protein_b_factors(
         protein_b_values
@@ -359,19 +369,17 @@ def _normalize_polymer_type(value: str) -> str:
     return _strip_cif_quotes(value).strip().casefold()
 
 
-def _structure_has_protein_like_residue(structure: gemmi.Structure) -> bool:
+def _model_has_protein_like_residue(model: gemmi.Model) -> bool:
     return any(
         _is_protein_like_residue_name(residue.name)
-        for model in structure
         for chain in model
         for residue in chain
     )
 
 
-def _structure_has_nucleic_acid_like_residue(structure: gemmi.Structure) -> bool:
+def _model_has_nucleic_acid_like_residue(model: gemmi.Model) -> bool:
     return any(
         _is_nucleic_acid_like_residue_name(residue.name)
-        for model in structure
         for chain in model
         for residue in chain
     )

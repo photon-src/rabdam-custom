@@ -86,13 +86,14 @@ def atom_site_row(
     occupancy: str = "1.00",
     b_factor: str = "10.00",
     group: str = "ATOM",
+    model_num: int = 1,
 ) -> str:
     coordinate = float(atom_id)
     return (
         f"{group} {atom_id} {element} {atom_name} {alt_id} {comp_id} "
         f"{asym_id} {entity_id} {seq_id} ? "
         f"{coordinate:.1f} 0.0 0.0 {occupancy} {b_factor} "
-        f"{seq_id} {comp_id} {asym_id} {atom_name} 1"
+        f"{seq_id} {comp_id} {asym_id} {atom_name} {model_num}"
     )
 
 
@@ -258,6 +259,64 @@ class PdbRedoStructureChecksTests(unittest.TestCase):
 
         self.assertFalse(checks.is_xray)
         self.assertEqual(checks.experimental_methods, ("ELECTRON MICROSCOPY",))
+
+    def test_multi_model_entries_use_first_model_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            candidate = write_candidate_files(
+                Path(temp_dir),
+                mmcif_text(
+                    atom_rows=(
+                        atom_site_row(
+                            1,
+                            comp_id="ASP",
+                            atom_name="OD1",
+                            element="O",
+                        ),
+                        atom_site_row(
+                            2,
+                            comp_id="ASP",
+                            atom_name="OD2",
+                            element="O",
+                        ),
+                        atom_site_row(
+                            3,
+                            comp_id="GLU",
+                            atom_name="OE1",
+                            element="O",
+                            seq_id=2,
+                            occupancy="0.50",
+                            model_num=2,
+                        ),
+                        atom_site_row(
+                            4,
+                            comp_id="GLU",
+                            atom_name="OE2",
+                            element="O",
+                            seq_id=2,
+                            model_num=2,
+                        ),
+                    ),
+                ),
+            )
+
+            checks = read_pdb_redo_structure_checks(candidate)
+
+        self.assertEqual(checks.atom_count, 2)
+        self.assertEqual(checks.non_hydrogen_atom_count, 2)
+        self.assertEqual(checks.protein_atom_count, 2)
+        self.assertEqual(checks.asp_glu_residue_count, 1)
+        self.assertEqual(checks.asp_glu_carboxyl_oxygen_count, 2)
+        self.assertEqual(
+            checks.asp_glu_residue_keys_with_occupancy_below_one,
+            (),
+        )
+        self.assertEqual(
+            checks.warnings,
+            (
+                "Structure contains multiple models; structural checks use "
+                "only the first model.",
+            ),
+        )
 
 
 if __name__ == "__main__":
