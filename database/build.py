@@ -38,12 +38,17 @@ from .process import (
 )
 
 
+DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "output"
+DEFAULT_DATABASE_CSV_PATH = DEFAULT_OUTPUT_DIR / "database.csv"
+DEFAULT_ACCEPTED_CSV_PATH = DEFAULT_DATABASE_CSV_PATH
+
+
 @dataclass(frozen=True, slots=True)
 class BnetDatabaseBuildOptions:
     """Options controlling a PDB-REDO Bnet database build."""
 
     pdb_redo_root: Path
-    accepted_csv_path: Path
+    accepted_csv_path: Path = DEFAULT_ACCEPTED_CSV_PATH
     accepted_details_csv_path: Path | None = None
     rejected_csv_path: Path | None = None
 
@@ -551,8 +556,11 @@ def parse_args(argv: list[str] | None = None) -> BnetDatabaseBuildOptions:
     parser.add_argument(
         "--accepted-csv",
         type=Path,
-        required=True,
-        help="Output accepted Bnet database CSV.",
+        default=DEFAULT_ACCEPTED_CSV_PATH,
+        help=(
+            "Output accepted Bnet database CSV. "
+            f"Default: {DEFAULT_ACCEPTED_CSV_PATH}"
+        ),
     )
     parser.add_argument(
         "--accepted-details-csv",
@@ -689,6 +697,9 @@ if __name__ == "__main__":
 __all__ = [
     "BnetDatabaseBuildOptions",
     "BnetDatabaseBuildSummary",
+    "DEFAULT_ACCEPTED_CSV_PATH",
+    "DEFAULT_DATABASE_CSV_PATH",
+    "DEFAULT_OUTPUT_DIR",
     "build_bnet_reference_database",
     "main",
     "parse_args",

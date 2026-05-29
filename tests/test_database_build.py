@@ -5,6 +5,8 @@ from unittest.mock import patch
 
 from database.build import (
     BnetDatabaseBuildOptions,
+    DEFAULT_ACCEPTED_CSV_PATH,
+    DEFAULT_DATABASE_CSV_PATH,
     _WorkerOptions,
     _process_candidate_worker,
     _process_candidates_parallel,
@@ -280,6 +282,18 @@ class BnetDatabaseBuildTests(unittest.TestCase):
         self.assertFalse(options.require_protein)
         self.assertFalse(options.reject_nucleic_acid)
         self.assertTrue(options.include_traceback)
+
+    def test_parse_args_defaults_to_database_output_folder(self) -> None:
+        options = parse_args(["/tmp/pdb-redo"])
+
+        self.assertEqual(options.pdb_redo_root, Path("/tmp/pdb-redo"))
+        self.assertEqual(options.accepted_csv_path, DEFAULT_ACCEPTED_CSV_PATH)
+        self.assertEqual(options.accepted_csv_path, DEFAULT_DATABASE_CSV_PATH)
+        self.assertEqual(options.accepted_csv_path.name, "database.csv")
+        self.assertEqual(
+            options.accepted_csv_path.parent,
+            Path(__file__).resolve().parents[1] / "database" / "output",
+        )
 
 
 if __name__ == "__main__":
