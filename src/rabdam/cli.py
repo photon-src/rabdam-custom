@@ -16,6 +16,11 @@ from bdamage.score import (
     BDamageScoreError,
     bdamage_scores_as_tuple,
 )
+from bnet.calculate import (
+    ProteinBnetCalculationError,
+    ProteinBnetResult,
+    calculate_protein_bnet,
+)
 from rabdam import __version__
 from rabdam.workflow import (
     BDamageWorkflowError,
@@ -87,6 +92,7 @@ CSV_FIELDNAMES = [
 RABDAM_CLI_ERRORS = (
     BDamageScoreError,
     BDamageWorkflowError,
+    ProteinBnetCalculationError,
     CrystalSymmetryError,
     CrystalTranslationError,
     CrystalTrimError,
@@ -105,6 +111,7 @@ class RabdamCliResult:
     local_input: ResolvedStructureInput
     output_csv: Path
     workflow_result: BDamageWorkflowResult
+    bnet_result: ProteinBnetResult
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -424,10 +431,21 @@ def run_from_args(
         quiet=args.quiet,
     )
 
+    bnet_result = run_stage(
+        "Calculating protein Bnet",
+        lambda: calculate_protein_bnet(
+            prepared_structure=workflow_result.prepared_structure,
+            bdamage_score_result=workflow_result.bdamage_score_result,
+        ),
+        stream=stderr,
+        quiet=args.quiet,
+    )
+
     cli_result = RabdamCliResult(
         local_input=local_input,
         output_csv=output_csv,
         workflow_result=workflow_result,
+        bnet_result=bnet_result,
     )
 
     if not args.quiet:
@@ -563,6 +581,10 @@ def print_summary(
         file=stream,
     )
     print(f"  Window size: {workflow_result.window_size}", file=stream)
+    print(file=stream)
+    print("Bnet summary:", file=stream)
+    print(f"  Protein Bnet sites: {result.bnet_result.site_count}", file=stream)
+    print(f"  Raw protein Bnet: {result.bnet_result.bnet:.4f}", file=stream)
 
     if preview_count > 0:
         packing_density_counts = packing_density_counts_as_tuple(

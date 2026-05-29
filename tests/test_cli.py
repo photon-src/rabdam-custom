@@ -6,6 +6,9 @@ import unittest
 from unittest.mock import patch
 
 from bdamage.score import BDamageAtomResult, BDamageScoreResult
+from bnet.calculate import ProteinBnetResult
+from bnet.metric import BnetResult
+from bnet.sites import BnetSite, ProteinBnetSiteSelection
 from crystal.symmetry import (
     SymmetryExpandedAtom,
     SymmetryExpandedStructure,
@@ -167,10 +170,32 @@ def make_cli_result(*, translated_block=None) -> RabdamCliResult:
         file_format=StructureFileFormat.MMCIF,
         local_path=Path("example.cif"),
     )
+    bnet_site = BnetSite(
+        source_atom_index=0,
+        bdamage_atom_index=1,
+        atom_serial=42,
+        chain_id="A",
+        residue_name="ASP",
+        residue_number=12,
+        insertion_code="",
+        atom_name="OD1",
+        bdamage=1.23456,
+    )
+    bnet_result = ProteinBnetResult(
+        metric=BnetResult(
+            bnet=1.234567,
+            median_bdamage=1.0,
+            left_area=0.45,
+            right_area=0.55,
+            site_count=1,
+        ),
+        site_selection=ProteinBnetSiteSelection(sites=(bnet_site,)),
+    )
     return RabdamCliResult(
         local_input=local_input,
         output_csv=Path("out.csv"),
         workflow_result=workflow_result,
+        bnet_result=bnet_result,
     )
 
 
@@ -466,6 +491,10 @@ class CliSummaryTests(unittest.TestCase):
             "  Selected atoms: 1\n"
             "  Window size: 1\n"
             "\n"
+            "Bnet summary:\n"
+            "  Protein Bnet sites: 1\n"
+            "  Raw protein Bnet: 1.2346\n"
+            "\n"
             "Total runtime: 2.3s\n",
         )
         self.assertNotIn("Preview:", stdout.getvalue())
@@ -497,6 +526,10 @@ class CliSummaryTests(unittest.TestCase):
             "BDamage summary:\n"
             "  Selected atoms: 1\n"
             "  Window size: 1\n"
+            "\n"
+            "Bnet summary:\n"
+            "  Protein Bnet sites: 1\n"
+            "  Raw protein Bnet: 1.2346\n"
             "\n"
             "Preview:\n"
             "  Packing-density counts, first 2:\n"
@@ -534,6 +567,10 @@ class CliSummaryTests(unittest.TestCase):
             "  Selected atoms: 1\n"
             "  Window size: 1\n"
             "\n"
+            "Bnet summary:\n"
+            "  Protein Bnet sites: 1\n"
+            "  Raw protein Bnet: 1.2346\n"
+            "\n"
             "Debug:\n"
             "  Translated block materialized: True\n"
             "\n"
@@ -544,7 +581,9 @@ class CliSummaryTests(unittest.TestCase):
         args = parse_args(["example.cif"])
         stdout = StringIO()
         stderr = StringIO()
-        resolved_input = make_cli_result().local_input
+        cli_result = make_cli_result()
+        resolved_input = cli_result.local_input
+        stage_calls: list[str] = []
 
         with (
             patch(
@@ -556,9 +595,20 @@ class CliSummaryTests(unittest.TestCase):
             patch("rabdam.cli.read_structure", return_value=object()),
             patch(
                 "rabdam.cli.calculate_bdamage_for_structure_data",
-                return_value=make_cli_result().workflow_result,
+                side_effect=lambda *_, **__: (
+                    stage_calls.append("bdamage") or cli_result.workflow_result
+                ),
             ),
-            patch("rabdam.cli.write_bdamage_csv"),
+            patch(
+                "rabdam.cli.write_bdamage_csv",
+                side_effect=lambda **_: stage_calls.append("csv"),
+            ),
+            patch(
+                "rabdam.cli.calculate_protein_bnet",
+                side_effect=lambda **_: (
+                    stage_calls.append("bnet") or cli_result.bnet_result
+                ),
+            ),
             patch("rabdam.cli.perf_counter", return_value=3.34),
         ):
             run_from_args(
@@ -569,6 +619,8 @@ class CliSummaryTests(unittest.TestCase):
             )
 
         self.assertIn("Total runtime: 2.3s\n", stdout.getvalue())
+        self.assertIn("Raw protein Bnet: 1.2346\n", stdout.getvalue())
+        self.assertEqual(stage_calls, ["bdamage", "csv", "bnet"])
         self.assertEqual(stderr.getvalue(), "")
 
 
