@@ -67,6 +67,7 @@ class PdbRedoProcessStage(str, Enum):
     PREFILTER_ELIGIBILITY = "prefilter_eligibility"
     RABDAM = "rabdam"
     FINAL_ELIGIBILITY = "final_eligibility"
+    UNEXPECTED_ERROR = "unexpected_error"
     ACCEPTED = "accepted"
 
 
@@ -80,6 +81,7 @@ class PdbRedoRejectReason(str, Enum):
     NO_PROTEIN = "no_protein"
     HAS_NUCLEIC_ACID = "has_nucleic_acid"
     RABDAM_ERROR = "rabdam_error"
+    UNEXPECTED_WORKER_ERROR = "unexpected_worker_error"
 
 
 @dataclass(frozen=True, slots=True)
@@ -471,7 +473,9 @@ def _accepted_row(
         atom_count=checks.atom_count,
         non_hydrogen_atom_count=checks.non_hydrogen_atom_count,
         protein_atom_count=checks.protein_atom_count,
-        selected_atom_count=workflow_result.prepared_structure.report.selected_atom_count,
+        selected_atom_count=(
+            workflow_result.prepared_structure.report.selected_atom_count
+        ),
         bdamage_window_size=workflow_result.window_size,
         has_protein=checks.has_protein,
         has_nucleic_acid=checks.has_nucleic_acid,
