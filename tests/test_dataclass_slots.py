@@ -6,6 +6,16 @@ import numpy as np
 
 from bnet.calculate import ProteinBnetResult
 from bnet.metric import BnetResult
+from bnet.percentile import (
+    BNET_PERCENTILE_RANK_METHOD,
+    BnetPercentileResult,
+    ResolutionMatchedReferenceSet,
+)
+from bnet.reference import (
+    BnetReferenceDatabase,
+    BnetReferenceEntry,
+    BnetReferenceMetadata,
+)
 from bnet.sites import BnetSite, ProteinBnetSiteSelection
 from bdamage.score import BDamageAtomInput, BDamageAtomResult, BDamageScoreResult
 from rabdam.workflow import BDamageWorkflowOptions, BDamageWorkflowResult
@@ -232,12 +242,52 @@ class DataclassSlotsTests(unittest.TestCase):
             metric=bnet_result,
             site_selection=bnet_site_selection,
         )
+        bnet_reference_entry = BnetReferenceEntry(
+            pdb_id="1ABC",
+            resolution_angstrom=1.5,
+            bnet=1.2,
+        )
+        bnet_reference_metadata = BnetReferenceMetadata(
+            database_id="test_reference",
+            source="unit test",
+        )
+        bnet_reference_database = BnetReferenceDatabase(
+            entries=(bnet_reference_entry,),
+            metadata=bnet_reference_metadata,
+        )
+        bnet_resolution_matched_set = ResolutionMatchedReferenceSet(
+            indices=(0,),
+            resolution_min=1.5,
+            resolution_max=1.5,
+        )
+        bnet_percentile_result = BnetPercentileResult(
+            bnet=1.2,
+            resolution_angstrom=1.5,
+            percentile_percent=75.0,
+            percentile_fraction=0.75,
+            rank=3,
+            rank_method=BNET_PERCENTILE_RANK_METHOD,
+            reference_database_id="test_reference",
+            reference_entry_count=4,
+            nearest_resolution_count=4,
+            local_reference_count=4,
+            local_resolution_min=1.0,
+            local_resolution_max=2.0,
+            local_bnet_min=0.5,
+            local_bnet_max=2.0,
+            nearest_reference_bnet=1.1,
+        )
 
         instances = (
             bnet_result,
             bnet_site,
             bnet_site_selection,
             protein_bnet_result,
+            bnet_reference_entry,
+            bnet_reference_metadata,
+            bnet_reference_database,
+            bnet_resolution_matched_set,
+            bnet_percentile_result,
             ResolvedStructureInput(
                 original_input="example.cif",
                 source_type=StructureSourceType.LOCAL_FILE,
