@@ -239,9 +239,9 @@ class CliArgumentTests(unittest.TestCase):
                 "example.cif",
                 "--output-csv",
                 "out.csv",
-                "--cache-dir",
-                "cache",
-                "--overwrite-cache",
+                "--download-dir",
+                "downloads/rcsb",
+                "--overwrite-download",
                 "--packing-density-threshold",
                 "8.5",
                 "--window-size-fraction",
@@ -276,8 +276,8 @@ class CliArgumentTests(unittest.TestCase):
 
         self.assertEqual(args.structure_input, "example.cif")
         self.assertEqual(args.output_csv, "out.csv")
-        self.assertEqual(args.cache_dir, "cache")
-        self.assertTrue(args.overwrite_cache)
+        self.assertEqual(args.download_dir, "downloads/rcsb")
+        self.assertTrue(args.overwrite_download)
         self.assertEqual(workflow_options.packing_density_threshold, 8.5)
         self.assertEqual(workflow_options.window_size_fraction, 0.1)
         self.assertEqual(workflow_options.minimum_window_size, 3)
@@ -299,6 +299,11 @@ class CliArgumentTests(unittest.TestCase):
         args = parse_args(["example.cif"])
 
         self.assertEqual(args.preview_count, 0)
+
+    def test_download_dir_defaults_to_downloads_rcsb(self) -> None:
+        args = parse_args(["1LYZ"])
+
+        self.assertEqual(args.download_dir, "downloads/rcsb")
 
     def test_invalid_input_returns_cli_error(self) -> None:
         stdout = StringIO()
@@ -360,7 +365,7 @@ class CliArgumentTests(unittest.TestCase):
         self.assertIn("usage: rabdam STRUCTURE_INPUT [options]", help_text)
         self.assertIn("input:", help_text)
         self.assertIn("general options:", help_text)
-        self.assertIn("output and cache options:", help_text)
+        self.assertIn("output and download options:", help_text)
         self.assertIn("BDamage calculation parameters:", help_text)
         self.assertIn("Bnet percentile options:", help_text)
         self.assertIn("selection options:", help_text)
@@ -368,15 +373,15 @@ class CliArgumentTests(unittest.TestCase):
 
         input_start = help_text.index("input:")
         general_start = help_text.index("general options:")
-        output_cache_start = help_text.index("output and cache options:")
+        output_download_start = help_text.index("output and download options:")
         bdamage_start = help_text.index("BDamage calculation parameters:")
         bnet_start = help_text.index("Bnet percentile options:")
         selection_start = help_text.index("selection options:")
         advanced_start = help_text.index("advanced/debugging options:")
 
         input_help = help_text[input_start:general_start]
-        general_help = help_text[general_start:output_cache_start]
-        output_cache_help = help_text[output_cache_start:bdamage_start]
+        general_help = help_text[general_start:output_download_start]
+        output_download_help = help_text[output_download_start:bdamage_start]
         bdamage_help = help_text[bdamage_start:bnet_start]
         bnet_help = help_text[bnet_start:selection_start]
         selection_help = help_text[selection_start:advanced_start]
@@ -394,9 +399,9 @@ class CliArgumentTests(unittest.TestCase):
         self.assertIn("--citations", general_help)
         self.assertIn("Print citation information and exit.", general_help)
         self.assertIn("-q, --quiet", general_help)
-        self.assertIn("-o PATH, --output-csv PATH", output_cache_help)
-        self.assertIn("--cache-dir DIR", output_cache_help)
-        self.assertIn("--overwrite-cache", output_cache_help)
+        self.assertIn("-o PATH, --output-csv PATH", output_download_help)
+        self.assertIn("--download-dir DIR", output_download_help)
+        self.assertIn("--overwrite-download", output_download_help)
         self.assertIn("--packing-density-threshold FLOAT", bdamage_help)
         self.assertIn("--translation-range INT", bdamage_help)
         self.assertIn(

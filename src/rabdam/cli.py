@@ -36,7 +36,7 @@ from rabdam.workflow import (
 from crystal.symmetry import CrystalSymmetryError
 from crystal.translate import CrystalTranslationError
 from crystal.trim import CrystalTrimError
-from input.rcsb import ensure_local_structure_file
+from input.rcsb import DEFAULT_RCSB_DOWNLOAD_DIR, ensure_local_structure_file
 from input.reader import read_structure
 from input.resolver import ResolvedStructureInput, resolve_structure_input
 from packing.density import (
@@ -47,7 +47,7 @@ from structure.models import StructurePreparationOptions
 
 
 DEFAULT_OUTPUT_CSV = Path("rabdam_BDamage.csv")
-DEFAULT_CACHE_DIR = Path(".rabdam_cache") / "rcsb"
+DEFAULT_DOWNLOAD_DIR = DEFAULT_RCSB_DOWNLOAD_DIR
 CITATIONS_MESSAGE = """Please cite:
 
 RABDAM:
@@ -133,7 +133,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     input_group = parser.add_argument_group("input")
     general = parser.add_argument_group("general options")
-    output_cache = parser.add_argument_group("output and cache options")
+    output_download = parser.add_argument_group("output and download options")
     bdamage = parser.add_argument_group("BDamage calculation parameters")
     bnet = parser.add_argument_group("Bnet percentile options")
     selection = parser.add_argument_group("selection options")
@@ -169,23 +169,26 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Suppress progress and summary output.",
     )
-    output_cache.add_argument(
+    output_download.add_argument(
         "-o",
         "--output-csv",
         metavar="PATH",
         default=str(DEFAULT_OUTPUT_CSV),
         help=f"Path for the per-atom BDamage CSV. Default: {DEFAULT_OUTPUT_CSV}",
     )
-    output_cache.add_argument(
-        "--cache-dir",
+    output_download.add_argument(
+        "--download-dir",
         metavar="DIR",
-        default=str(DEFAULT_CACHE_DIR),
-        help=f"Directory for downloaded RCSB mmCIF files. Default: {DEFAULT_CACHE_DIR}",
+        default=str(DEFAULT_DOWNLOAD_DIR),
+        help=(
+            "Directory for downloaded RCSB mmCIF files. "
+            f"Default: {DEFAULT_DOWNLOAD_DIR}"
+        ),
     )
-    output_cache.add_argument(
-        "--overwrite-cache",
+    output_download.add_argument(
+        "--overwrite-download",
         action="store_true",
-        help="Download RCSB inputs again even when a cached mmCIF exists.",
+        help="Download RCSB inputs again even when the mmCIF file already exists.",
     )
     bdamage.add_argument(
         "--packing-density-threshold",
@@ -413,8 +416,8 @@ def run_from_args(
         "Ensuring local structure file",
         lambda: ensure_local_structure_file(
             resolved,
-            cache_dir=Path(args.cache_dir).expanduser(),
-            overwrite=args.overwrite_cache,
+            download_dir=Path(args.download_dir).expanduser(),
+            overwrite=args.overwrite_download,
         ),
         stream=stderr,
         quiet=args.quiet,

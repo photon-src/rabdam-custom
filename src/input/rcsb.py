@@ -2,7 +2,7 @@
 Download RCSB/PDB structure files for RABDAM.
 
 This module takes a resolved RCSB/PDB ID input and downloads the corresponding
-mmCIF file to a local cache directory.
+mmCIF file to a local downloads directory.
 """
 
 from pathlib import Path
@@ -17,6 +17,7 @@ from input.resolver import (
 )
 
 RCSB_MMCIF_DOWNLOAD_URL = "https://files.rcsb.org/download/{structure_id}.cif"
+DEFAULT_RCSB_DOWNLOAD_DIR = Path("downloads") / "rcsb"
 
 
 class RcsbDownloadError(InputResolutionError):
@@ -43,7 +44,7 @@ class RcsbBatchDownloadError(RcsbDownloadError):
 def download_rcsb_mmcif(
     resolved_input: ResolvedStructureInput,
     *,
-    cache_dir: Path | str = Path(".rabdam_cache") / "rcsb",
+    download_dir: Path | str = DEFAULT_RCSB_DOWNLOAD_DIR,
     overwrite: bool = False,
 ) -> ResolvedStructureInput:
     """
@@ -54,11 +55,11 @@ def download_rcsb_mmcif(
     resolved_input:
         A ResolvedStructureInput with source_type == RCSB_ID.
 
-    cache_dir:
+    download_dir:
         Directory where downloaded mmCIF files should be saved.
 
     overwrite:
-        If False, reuse an existing cached file.
+        If False, reuse an existing downloaded file.
         If True, download again even if the file already exists.
 
     Returns
@@ -77,7 +78,7 @@ def download_rcsb_mmcif(
         raise RcsbDownloadError("RCSB input is missing a structure ID.")
 
     structure_id = resolved_input.structure_id.upper()
-    output_dir = Path(cache_dir).expanduser()
+    output_dir = Path(download_dir).expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     output_path = output_dir / f"{structure_id}.cif"
@@ -124,7 +125,7 @@ def download_rcsb_mmcif(
 def ensure_local_structure_file(
     resolved_input: ResolvedStructureInput,
     *,
-    cache_dir: Path | str = Path(".rabdam_cache") / "rcsb",
+    download_dir: Path | str = DEFAULT_RCSB_DOWNLOAD_DIR,
     overwrite: bool = False,
 ) -> ResolvedStructureInput:
     """
@@ -140,7 +141,7 @@ def ensure_local_structure_file(
     if resolved_input.needs_download:
         return download_rcsb_mmcif(
             resolved_input,
-            cache_dir=cache_dir,
+            download_dir=download_dir,
             overwrite=overwrite,
         )
 
@@ -152,7 +153,7 @@ def ensure_local_structure_file(
 def ensure_local_structure_files(
     resolved_inputs: list[ResolvedStructureInput],
     *,
-    cache_dir: Path | str = Path(".rabdam_cache") / "rcsb",
+    download_dir: Path | str = DEFAULT_RCSB_DOWNLOAD_DIR,
     overwrite: bool = False,
 ) -> list[ResolvedStructureInput]:
     """
@@ -171,7 +172,7 @@ def ensure_local_structure_files(
             local_inputs.append(
                 ensure_local_structure_file(
                     resolved_input,
-                    cache_dir=cache_dir,
+                    download_dir=download_dir,
                     overwrite=overwrite,
                 )
             )
