@@ -97,20 +97,43 @@ def atom_site_row(
     )
 
 
+def backbone_atom_rows(
+    start_atom_id: int,
+    *,
+    residue_count: int,
+    identical_backbone_b_factors: bool = False,
+) -> tuple[str, ...]:
+    rows: list[str] = []
+    atom_id = start_atom_id
+
+    for residue_index in range(1, residue_count + 1):
+        for atom_offset, atom_name in enumerate(("N", "CA", "C", "O")):
+            b_factor = (
+                "10.00"
+                if identical_backbone_b_factors
+                else f"{10.0 + residue_index + atom_offset / 10.0:.2f}"
+            )
+            rows.append(
+                atom_site_row(
+                    atom_id,
+                    seq_id=residue_index,
+                    atom_name=atom_name,
+                    element="N" if atom_name == "N" else "C",
+                    b_factor=b_factor,
+                )
+            )
+            atom_id += 1
+
+    return tuple(rows)
+
+
 def _quote_cif(value: str) -> str:
     return f"'{value}'"
 
 
 class PdbRedoStructureChecksTests(unittest.TestCase):
     def test_reads_protein_only_xray_entry(self) -> None:
-        atoms = tuple(
-            atom_site_row(
-                atom_id,
-                seq_id=atom_id,
-                b_factor=f"{10.0 + atom_id / 10.0:.2f}",
-            )
-            for atom_id in range(1, 25)
-        )
+        atoms = backbone_atom_rows(1, residue_count=6)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             candidate = write_candidate_files(
@@ -245,6 +268,69 @@ class PdbRedoStructureChecksTests(unittest.TestCase):
             checks.asp_glu_residue_keys_with_occupancy_below_one,
             ("model=1;chain=A;residue=GLU;seqid=2",),
         )
+
+    def test_d_isomer_asp_glu_residues_count_for_bnet_checks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            candidate = write_candidate_files(
+                Path(temp_dir),
+                mmcif_text(
+                    atom_rows=(
+                        atom_site_row(
+                            1,
+                            comp_id="DAS",
+                            atom_name="OD1",
+                            element="O",
+                        ),
+                        atom_site_row(
+                            2,
+                            comp_id="DAS",
+                            atom_name="OD2",
+                            element="O",
+                            occupancy="0.50",
+                        ),
+                        atom_site_row(
+                            3,
+                            comp_id="DGL",
+                            atom_name="OE1",
+                            element="O",
+                            seq_id=2,
+                        ),
+                        atom_site_row(
+                            4,
+                            comp_id="DGL",
+                            atom_name="OE2",
+                            element="O",
+                            seq_id=2,
+                        ),
+                    ),
+                ),
+            )
+
+            checks = read_pdb_redo_structure_checks(candidate)
+
+        self.assertEqual(checks.asp_glu_residue_count, 2)
+        self.assertEqual(checks.asp_glu_carboxyl_oxygen_count, 4)
+        self.assertEqual(
+            checks.asp_glu_residue_keys_with_occupancy_below_one,
+            ("model=1;chain=A;residue=DAS;seqid=1",),
+        )
+
+    def test_backbone_b_factor_fallback_matches_rabdam2_threshold(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            candidate = write_candidate_files(
+                Path(temp_dir),
+                mmcif_text(
+                    atom_rows=backbone_atom_rows(
+                        1,
+                        residue_count=20,
+                        identical_backbone_b_factors=True,
+                    ),
+                ),
+            )
+
+            checks = read_pdb_redo_structure_checks(candidate)
+
+        self.assertFalse(checks.has_nonflat_protein_b_factors)
 
     def test_non_xray_method_is_not_xray(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -16,8 +16,9 @@ from .discover import PdbRedoCandidate
 from structure.classify import is_nucleic_acid_component, is_protein_component
 
 
-_ASP_GLU_RESIDUE_NAMES = frozenset({"ASP", "GLU"})
+_ASP_GLU_RESIDUE_NAMES = frozenset({"ASP", "GLU", "DAS", "DGL"})
 _ASP_GLU_CARBOXYL_OXYGEN_NAMES = frozenset({"OD1", "OD2", "OE1", "OE2"})
+_BACKBONE_ATOM_NAMES = frozenset({"N", "CA", "C", "O"})
 _PROTEIN_POLYMER_TYPES = frozenset(
     {
         "polypeptide(l)",
@@ -50,9 +51,9 @@ class PdbRedoStructureCheckError(ValueError):
 class PdbRedoStructureChecks:
     """Structural facts extracted from a PDB-REDO final mmCIF model.
 
-    ``has_nonflat_protein_b_factors`` is a heuristic guardrail based on
-    variation in protein atom B-factors. Prefer explicit PDB-REDO B-factor
-    model metadata when available.
+    ``has_nonflat_protein_b_factors`` is the RABDAM2-style structural fallback
+    check for per-atom B-factors. Prefer explicit PDB-REDO B-factor model
+    metadata when available.
     """
 
     pdb_id: str
@@ -248,11 +249,12 @@ def _collect_b_factor_info(model: gemmi.Model) -> _BFactorInfo:
     atom_count = 0
     non_hydrogen_atom_count = 0
     protein_atom_count = 0
-    protein_b_values: list[float] = []
+    residue_backbone_b_values: dict[str, list[float]] = {}
 
     for chain in model:
         for residue in chain:
             is_protein_residue = _is_protein_like_residue_name(residue.name)
+            residue_key = _residue_key(model, chain, residue)
 
             for atom in residue:
                 atom_count += 1
@@ -262,11 +264,15 @@ def _collect_b_factor_info(model: gemmi.Model) -> _BFactorInfo:
 
                 if is_protein_residue:
                     protein_atom_count += 1
-                    if not _is_hydrogen(atom):
-                        protein_b_values.append(float(atom.b_iso))
+                    atom_name = atom.name.strip().upper()
+                    if not _is_hydrogen(atom) and atom_name in _BACKBONE_ATOM_NAMES:
+                        residue_backbone_b_values.setdefault(
+                            residue_key,
+                            [],
+                        ).append(float(atom.b_iso))
 
-    has_nonflat_protein_b_factors = _has_nonflat_protein_b_factors(
-        protein_b_values
+    has_nonflat_protein_b_factors = _has_per_atom_b_factors_by_backbone(
+        residue_backbone_b_values
     )
 
     return _BFactorInfo(
@@ -277,21 +283,31 @@ def _collect_b_factor_info(model: gemmi.Model) -> _BFactorInfo:
     )
 
 
-def _has_nonflat_protein_b_factors(b_values: list[float]) -> bool:
-    """Heuristically determine whether protein B-factors are non-flat.
+def _has_per_atom_b_factors_by_backbone(
+    residue_backbone_b_values: dict[str, list[float]],
+    *,
+    threshold_fraction: float = 0.2,
+) -> bool:
+    """Return the RABDAM2-style per-atom B-factor fallback result.
 
-    PDB-REDO records flat B-factor model information separately, but this
-    structural check is useful as an independent guardrail. A truly flat or
-    residue-level model usually has very few distinct B values among protein
-    atoms.
+    RABDAM2 counts residues whose listed backbone atom B-factors are all
+    identical. If at least 20% of residues, with a minimum threshold of three
+    residues, look per-residue/flat, the structure is treated as not having
+    per-atom B-factors.
     """
 
-    finite_b_values = [value for value in b_values if math.isfinite(value)]
-    if len(finite_b_values) < 20:
+    total_residue_count = len(residue_backbone_b_values)
+    if total_residue_count == 0:
         return False
 
-    rounded_values = {round(value, 2) for value in finite_b_values}
-    if len(rounded_values) < 10:
+    per_residue_b_factor_count = 0
+    for b_values in residue_backbone_b_values.values():
+        finite_values = [value for value in b_values if math.isfinite(value)]
+        if finite_values and len(set(finite_values)) == 1:
+            per_residue_b_factor_count += 1
+
+    threshold = max(3.0, total_residue_count * threshold_fraction)
+    if per_residue_b_factor_count >= threshold:
         return False
 
     return True

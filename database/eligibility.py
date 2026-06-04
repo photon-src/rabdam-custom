@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 import math
@@ -30,7 +31,7 @@ class BnetEligibilityReason(str, Enum):
     INVALID_RFREE = "invalid_rfree"
     RFREE_TOO_HIGH = "rfree_too_high"
 
-    MISSING_TEMPERATURE = "missing_temperature"
+    MISSING_TEMPERATURE = "cannot_verify_temperature"
     INVALID_TEMPERATURE = "invalid_temperature"
     TEMPERATURE_OUTSIDE_CRYO_RANGE = "temperature_outside_cryo_range"
 
@@ -92,7 +93,7 @@ class BnetEligibilityContext:
 
     resolution_angstrom: float | None
     r_free: float | None
-    temperature_k: float | None
+    temperature_k: float | Sequence[float] | None
     asp_glu_carboxyl_oxygen_count: int
     has_asp_glu_residue_with_total_occupancy_below_one: bool
     uses_per_atom_b_factors: bool
@@ -159,44 +160,49 @@ def check_bnet_reference_eligibility(
                 r_free,
             )
         )
-    elif r_free > max_r_free:
+    elif r_free >= max_r_free:
         issues.append(
             BnetEligibilityIssue(
                 BnetEligibilityReason.RFREE_TOO_HIGH,
                 (
-                    f"Rfree is {r_free:.3g}, which is above the "
-                    f"{max_r_free:.3g} Bnet reference database limit."
+                    f"Rfree is {r_free:.3g}, which does not satisfy the "
+                    f"strict Rfree < {max_r_free:.3g} Bnet reference "
+                    "database limit."
                 ),
                 r_free,
             )
         )
 
-    temperature = context.temperature_k
-    if temperature is None:
-        issues.append(
-            BnetEligibilityIssue(
-                BnetEligibilityReason.MISSING_TEMPERATURE,
-                "Collection temperature is missing.",
-            )
-        )
-    elif not _is_finite_number(temperature) or temperature <= 0.0:
+    temperature_values = _temperature_values(context.temperature_k)
+    if temperature_values is None:
         issues.append(
             BnetEligibilityIssue(
                 BnetEligibilityReason.INVALID_TEMPERATURE,
-                "Collection temperature must be a finite positive number.",
-                temperature,
+                "Collection temperature must contain only finite positive numbers.",
+                context.temperature_k,
             )
         )
-    elif not min_temperature_k <= temperature <= max_temperature_k:
+    elif not temperature_values:
+        issues.append(
+            BnetEligibilityIssue(
+                BnetEligibilityReason.MISSING_TEMPERATURE,
+                "Collection temperature could not be verified.",
+            )
+        )
+    elif any(
+        temperature < min_temperature_k or temperature > max_temperature_k
+        for temperature in temperature_values
+    ):
         issues.append(
             BnetEligibilityIssue(
                 BnetEligibilityReason.TEMPERATURE_OUTSIDE_CRYO_RANGE,
                 (
-                    f"Collection temperature is {temperature:.3g} K, outside the "
+                    "At least one collection temperature is outside the "
                     f"{min_temperature_k:.3g}–{max_temperature_k:.3g} K "
-                    "Bnet reference database range."
+                    "Bnet reference database range: "
+                    f"{_format_temperature_values(temperature_values)} K."
                 ),
-                temperature,
+                temperature_values,
             )
         )
 
@@ -310,6 +316,40 @@ def _is_finite_number(value: object) -> bool:
         return False
 
     return math.isfinite(number)
+
+
+def _temperature_values(value: object) -> tuple[float, ...] | None:
+    if value is None:
+        return ()
+
+    if isinstance(value, bool):
+        return None
+
+    if isinstance(value, Sequence) and not isinstance(
+        value,
+        (str, bytes, bytearray),
+    ):
+        values: list[float] = []
+        for item in value:
+            if isinstance(item, bool) or not _is_finite_number(item):
+                return None
+            number = float(cast(_Floatable, item))
+            if number <= 0.0:
+                return None
+            values.append(number)
+        return tuple(values)
+
+    if not _is_finite_number(value):
+        return None
+
+    number = float(cast(_Floatable, value))
+    if number <= 0.0:
+        return None
+    return (number,)
+
+
+def _format_temperature_values(values: tuple[float, ...]) -> str:
+    return ", ".join(f"{value:.3g}" for value in values)
 
 
 __all__ = [

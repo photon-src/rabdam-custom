@@ -32,6 +32,7 @@ def make_metadata(
     resolution_angstrom: float | None = 1.5,
     r_free: float | None = 0.25,
     temperature_k: float | None = 100.0,
+    b_factor_refinement_type: str | None = None,
 ) -> PdbRedoMetadata:
     return PdbRedoMetadata(
         pdb_id="1abc",
@@ -41,12 +42,22 @@ def make_metadata(
         temperature_k=temperature_k,
         wilson_b=12.5,
         b_factor_restraint_weight=0.8,
+        b_factor_refinement_type=b_factor_refinement_type,
         resolution_source="data_json:resolution",
         r_work_source="data_json:rwork",
         r_free_source="data_json:rfree",
         temperature_source="data_json:temperature",
+        growth_temperature_k=293.0,
+        growth_temperature_values_k=(293.0,),
+        growth_temperature_source="data_json:growth_temperature",
+        growth_temperature_sources=("data_json:growth_temperature",),
         wilson_b_source="data_json:wilson_b",
         b_factor_restraint_weight_source="data_json:b_factor_restraint_weight",
+        b_factor_refinement_type_source=(
+            "data_json:properties.BREFTYPE"
+            if b_factor_refinement_type is not None
+            else None
+        ),
         data_json_path=Path("/tmp/pdb-redo/1abc/data.json"),
         final_cif_path=Path("/tmp/pdb-redo/1abc/1abc_final.cif"),
         warnings=("metadata warning",),
@@ -210,6 +221,125 @@ class PdbRedoProcessTests(unittest.TestCase):
             BnetEligibilityReason.MISSING_RESOLUTION.value,
         )
 
+    def test_reference_ineligible_candidate_can_still_record_raw_bnet(
+        self,
+    ) -> None:
+        candidate = make_candidate()
+
+        with (
+            patch(
+                "database.process.read_pdb_redo_metadata",
+                return_value=make_metadata(temperature_k=None),
+            ),
+            patch(
+                "database.process.read_pdb_redo_structure_checks",
+                return_value=make_checks(),
+            ),
+            patch(
+                "database.process._calculate_rabdam_bnet",
+                return_value=(make_workflow_result(), make_bnet_result(bnet=1.7)),
+            ) as calculate_mock,
+        ):
+            result = process_pdb_redo_candidate(
+                candidate,
+                attempt_bnet_for_reference_ineligible=True,
+            )
+
+        calculate_mock.assert_called_once()
+        assert result.rejected is not None
+        self.assertEqual(
+            result.rejected.stage,
+            PdbRedoProcessStage.FINAL_ELIGIBILITY,
+        )
+        self.assertEqual(
+            result.rejected.reason,
+            BnetEligibilityReason.MISSING_TEMPERATURE.value,
+        )
+        self.assertEqual(result.rejected.bnet, 1.7)
+
+    def test_breftype_over_rejects_even_when_structural_fallback_passes(
+        self,
+    ) -> None:
+        candidate = make_candidate()
+
+        with (
+            patch(
+                "database.process.read_pdb_redo_metadata",
+                return_value=make_metadata(b_factor_refinement_type="OVER"),
+            ),
+            patch(
+                "database.process.read_pdb_redo_structure_checks",
+                return_value=make_checks(has_nonflat_protein_b_factors=True),
+            ),
+            patch("database.process._calculate_rabdam_bnet") as calculate_mock,
+        ):
+            result = process_pdb_redo_candidate(candidate)
+
+        calculate_mock.assert_not_called()
+        assert result.rejected is not None
+        self.assertEqual(
+            result.rejected.reason,
+            BnetEligibilityReason.NOT_PER_ATOM_B_FACTOR_MODEL.value,
+        )
+        self.assertFalse(result.rejected.uses_per_atom_b_factors)
+        self.assertEqual(result.rejected.b_factor_refinement_type, "OVER")
+        self.assertEqual(
+            result.rejected.b_factor_model_source,
+            "data_json:properties.BREFTYPE",
+        )
+
+    def test_breftype_isot_accepts_when_structural_fallback_fails(self) -> None:
+        candidate = make_candidate()
+
+        with (
+            patch(
+                "database.process.read_pdb_redo_metadata",
+                return_value=make_metadata(b_factor_refinement_type="ISOT"),
+            ),
+            patch(
+                "database.process.read_pdb_redo_structure_checks",
+                return_value=make_checks(has_nonflat_protein_b_factors=False),
+            ),
+            patch(
+                "database.process._calculate_rabdam_bnet",
+                return_value=(make_workflow_result(), make_bnet_result()),
+            ),
+        ):
+            result = process_pdb_redo_candidate(candidate)
+
+        self.assertTrue(result.is_accepted)
+        assert result.accepted is not None
+        self.assertFalse(result.accepted.has_nonflat_protein_b_factors)
+        self.assertTrue(result.accepted.uses_per_atom_b_factors)
+        self.assertEqual(result.accepted.b_factor_refinement_type, "ISOT")
+        self.assertEqual(
+            result.accepted.b_factor_model_source,
+            "data_json:properties.BREFTYPE",
+        )
+
+    def test_default_allows_nucleic_acid_when_protein_is_present(self) -> None:
+        candidate = make_candidate()
+
+        with (
+            patch(
+                "database.process.read_pdb_redo_metadata",
+                return_value=make_metadata(),
+            ),
+            patch(
+                "database.process.read_pdb_redo_structure_checks",
+                return_value=make_checks(has_nucleic_acid=True),
+            ),
+            patch(
+                "database.process._calculate_rabdam_bnet",
+                return_value=(make_workflow_result(), make_bnet_result()),
+            ),
+        ):
+            result = process_pdb_redo_candidate(candidate)
+
+        self.assertTrue(result.is_accepted)
+        assert result.accepted is not None
+        self.assertTrue(result.accepted.has_nucleic_acid)
+
     def test_rabdam_error_rejects_candidate(self) -> None:
         candidate = make_candidate()
         error = BDamageWorkflowError("workflow failed")
@@ -287,10 +417,16 @@ class PdbRedoProcessTests(unittest.TestCase):
         self.assertEqual(result.accepted.resolution_angstrom, 1.5)
         self.assertEqual(result.accepted.bnet, 1.2)
         self.assertEqual(result.accepted.bnet_site_count, 24)
+        self.assertEqual(result.accepted.growth_temperature_k, 293.0)
+        self.assertEqual(result.accepted.growth_temperature_values_k, (293.0,))
         self.assertEqual(result.accepted.selected_atom_count, 80)
         self.assertEqual(result.accepted.bdamage_window_size, 11)
         self.assertTrue(result.accepted.has_nonflat_protein_b_factors)
-        self.assertFalse(hasattr(result.accepted, "uses_per_atom_b_factors"))
+        self.assertTrue(result.accepted.uses_per_atom_b_factors)
+        self.assertEqual(
+            result.accepted.b_factor_model_source,
+            "structure_backbone_b_factor_check",
+        )
         self.assertEqual(result.accepted.metadata_warnings, metadata.warnings)
         self.assertEqual(result.accepted.structure_check_warnings, checks.warnings)
 

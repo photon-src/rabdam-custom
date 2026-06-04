@@ -143,3 +143,90 @@ class BnetEligibilityTests(unittest.TestCase):
         )
 
         self.assertTrue(result.is_eligible)
+
+    def test_rejects_missing_temperature_as_cannot_verify_temperature(self) -> None:
+        context = make_eligible_context()
+        context_without_temperature = BnetEligibilityContext(
+            resolution_angstrom=context.resolution_angstrom,
+            r_free=context.r_free,
+            temperature_k=None,
+            asp_glu_carboxyl_oxygen_count=context.asp_glu_carboxyl_oxygen_count,
+            has_asp_glu_residue_with_total_occupancy_below_one=(
+                context.has_asp_glu_residue_with_total_occupancy_below_one
+            ),
+            uses_per_atom_b_factors=context.uses_per_atom_b_factors,
+            bnet=context.bnet,
+        )
+
+        result = check_bnet_reference_eligibility(context_without_temperature)
+
+        self.assertFalse(result.is_eligible)
+        self.assertEqual(
+            result.primary_reason,
+            BnetEligibilityReason.MISSING_TEMPERATURE,
+        )
+        self.assertEqual(
+            result.primary_reason.value,
+            "cannot_verify_temperature",
+        )
+
+    def test_accepts_multiple_verified_cryo_temperatures(self) -> None:
+        context = make_eligible_context()
+        context_with_multiple_temperatures = BnetEligibilityContext(
+            resolution_angstrom=context.resolution_angstrom,
+            r_free=context.r_free,
+            temperature_k=(100.0, 110.0),
+            asp_glu_carboxyl_oxygen_count=context.asp_glu_carboxyl_oxygen_count,
+            has_asp_glu_residue_with_total_occupancy_below_one=(
+                context.has_asp_glu_residue_with_total_occupancy_below_one
+            ),
+            uses_per_atom_b_factors=context.uses_per_atom_b_factors,
+            bnet=context.bnet,
+        )
+
+        result = check_bnet_reference_eligibility(
+            context_with_multiple_temperatures
+        )
+
+        self.assertTrue(result.is_eligible)
+
+    def test_rejects_if_any_verified_temperature_is_out_of_range(self) -> None:
+        context = make_eligible_context()
+        context_with_hot_temperature = BnetEligibilityContext(
+            resolution_angstrom=context.resolution_angstrom,
+            r_free=context.r_free,
+            temperature_k=(100.0, 130.0),
+            asp_glu_carboxyl_oxygen_count=context.asp_glu_carboxyl_oxygen_count,
+            has_asp_glu_residue_with_total_occupancy_below_one=(
+                context.has_asp_glu_residue_with_total_occupancy_below_one
+            ),
+            uses_per_atom_b_factors=context.uses_per_atom_b_factors,
+            bnet=context.bnet,
+        )
+
+        result = check_bnet_reference_eligibility(context_with_hot_temperature)
+
+        self.assertFalse(result.is_eligible)
+        self.assertEqual(
+            result.primary_reason,
+            BnetEligibilityReason.TEMPERATURE_OUTSIDE_CRYO_RANGE,
+        )
+
+    def test_rejects_rfree_equal_to_strict_limit(self) -> None:
+        context = make_eligible_context()
+        context_at_rfree_limit = BnetEligibilityContext(
+            resolution_angstrom=context.resolution_angstrom,
+            r_free=0.4,
+            temperature_k=context.temperature_k,
+            asp_glu_carboxyl_oxygen_count=context.asp_glu_carboxyl_oxygen_count,
+            has_asp_glu_residue_with_total_occupancy_below_one=(
+                context.has_asp_glu_residue_with_total_occupancy_below_one
+            ),
+            uses_per_atom_b_factors=context.uses_per_atom_b_factors,
+            bnet=context.bnet,
+        )
+
+        result = check_bnet_reference_eligibility(context_at_rfree_limit)
+
+        self.assertFalse(result.is_eligible)
+        self.assertEqual(result.primary_reason, BnetEligibilityReason.RFREE_TOO_HIGH)

@@ -12,11 +12,13 @@ Workers never write output files. This keeps the CSVs safe and resumable.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 import argparse
 import csv
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+import json
 import os
 from pathlib import Path
 import sys
@@ -28,11 +30,20 @@ from .discover import (
     PdbRedoDiscoveryResult,
     discover_pdb_redo_candidates,
 )
-from .output import BnetDatabaseCsvWriter
+from .metadata import TemperatureCacheEntry
+from .output import (
+    BnetDatabaseCsvWriter,
+    TemperatureCacheCsvWriter,
+    load_temperature_cache,
+    write_sorted_reference_csv_from_accepted_csv,
+)
 from .process import (
     PdbRedoProcessResult,
     PdbRedoProcessStage,
     PdbRedoRejectReason,
+    NON_PER_ATOM_B_FACTOR_REFINEMENT_TYPES,
+    PER_ATOM_B_FACTOR_REFINEMENT_TYPES,
+    STRUCTURAL_B_FACTOR_MODEL_CHECK_SOURCE,
     RejectedBnetReferenceRow,
     process_pdb_redo_candidate,
 )
@@ -40,7 +51,35 @@ from .process import (
 
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "output"
 DEFAULT_DATABASE_CSV_PATH = DEFAULT_OUTPUT_DIR / "database.csv"
-DEFAULT_ACCEPTED_CSV_PATH = DEFAULT_DATABASE_CSV_PATH
+DEFAULT_FINAL_REFERENCE_CSV_PATH = DEFAULT_DATABASE_CSV_PATH
+DEFAULT_ACCEPTED_CSV_PATH = DEFAULT_OUTPUT_DIR / "database.accepted.csv"
+DEFAULT_ACCEPTED_DETAILS_CSV_PATH = DEFAULT_OUTPUT_DIR / "database.accepted_details.csv"
+DEFAULT_REJECTED_CSV_PATH = DEFAULT_OUTPUT_DIR / "database.rejected.csv"
+DEFAULT_ALL_SCORES_CSV_PATH = DEFAULT_OUTPUT_DIR / "database.all_scores.csv"
+DEFAULT_TEMPERATURE_CACHE_CSV_PATH = DEFAULT_OUTPUT_DIR / "rcsb_temperature_cache.csv"
+DEFAULT_REFERENCE_DATABASE_ID_PREFIX = "pdb_redo_partial_strict_cryo_bnet"
+STRICT_CRYO_ELIGIBILITY_POLICY_ID = "rabdam2_strict_cryo_v1"
+
+
+def default_worker_count(cpu_count: int | None = None) -> int:
+    """Return the default worker count for this host.
+
+    The build is CPU-capable but also disk, memory, and network hungry. Use
+    most CPU cores while leaving some room for the OS.
+    """
+
+    detected_cpu_count = os.cpu_count() if cpu_count is None else cpu_count
+    available_cpu_count = max(1, detected_cpu_count or 1)
+    if available_cpu_count <= 2:
+        return available_cpu_count
+
+    return max(2, (available_cpu_count * 9) // 10)
+
+
+def default_max_tasks_in_flight(jobs: int) -> int:
+    """Return the default number of queued worker tasks for a job count."""
+
+    return max(1, jobs * 2)
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,8 +88,13 @@ class BnetDatabaseBuildOptions:
 
     pdb_redo_root: Path
     accepted_csv_path: Path = DEFAULT_ACCEPTED_CSV_PATH
-    accepted_details_csv_path: Path | None = None
-    rejected_csv_path: Path | None = None
+    accepted_details_csv_path: Path | None = DEFAULT_ACCEPTED_DETAILS_CSV_PATH
+    rejected_csv_path: Path | None = DEFAULT_REJECTED_CSV_PATH
+    all_scores_csv_path: Path | None = DEFAULT_ALL_SCORES_CSV_PATH
+    final_reference_csv_path: Path | None = DEFAULT_FINAL_REFERENCE_CSV_PATH
+    manifest_path: Path | None = None
+    temperature_cache_csv_path: Path | None = DEFAULT_TEMPERATURE_CACHE_CSV_PATH
+    database_id: str | None = None
 
     require_data_json: bool = True
     recursive_discovery: bool = True
@@ -60,13 +104,15 @@ class BnetDatabaseBuildOptions:
     max_candidates: int | None = None
     progress_every: int = 100
 
-    jobs: int = max(1, (os.cpu_count() or 2) - 1)
+    jobs: int = field(default_factory=default_worker_count)
     max_tasks_in_flight: int | None = None
 
     require_xray: bool = True
     require_single_model: bool = True
     require_protein: bool = True
-    reject_nucleic_acid: bool = True
+    reject_nucleic_acid: bool = False
+    attempt_bnet_for_reference_ineligible: bool = True
+    fetch_rcsb_temperature: bool = False
 
     include_traceback: bool = False
 
@@ -81,6 +127,8 @@ class BnetDatabaseBuildSummary:
     attempted_count: int
     accepted_count: int
     rejected_count: int
+    all_scores_count: int
+    final_reference_count: int
     elapsed_seconds: float
 
     @property
@@ -94,6 +142,9 @@ class BnetDatabaseBuildSummary:
 class _WorkerOptions:
     """Pickle-friendly subset of processing options used by worker processes."""
 
+    temperature_cache: Mapping[str, TemperatureCacheEntry]
+    fetch_rcsb_temperature: bool
+    attempt_bnet_for_reference_ineligible: bool
     require_xray: bool
     require_single_model: bool
     require_protein: bool
@@ -117,10 +168,12 @@ def build_bnet_reference_database(
     discovered_pdb_ids = frozenset(
         candidate.pdb_id.casefold() for candidate in discovery.candidates
     )
+    temperature_cache = load_temperature_cache(options.temperature_cache_csv_path)
     existing_processed_pdb_ids = (
         _read_processed_pdb_ids(
             options.accepted_csv_path,
             options.rejected_csv_path,
+            options.all_scores_csv_path,
         )
         if options.resume and not options.overwrite
         else frozenset()
@@ -131,6 +184,12 @@ def build_bnet_reference_database(
         options.accepted_csv_path,
         accepted_details_csv_path=options.accepted_details_csv_path,
         rejected_csv_path=options.rejected_csv_path,
+        all_scores_csv_path=options.all_scores_csv_path,
+        overwrite=options.overwrite,
+    )
+    temperature_cache_writer = TemperatureCacheCsvWriter(
+        options.temperature_cache_csv_path,
+        existing_cache=temperature_cache,
         overwrite=options.overwrite,
     )
 
@@ -148,6 +207,11 @@ def build_bnet_reference_database(
     )
 
     worker_options = _WorkerOptions(
+        temperature_cache=temperature_cache,
+        fetch_rcsb_temperature=options.fetch_rcsb_temperature,
+        attempt_bnet_for_reference_ineligible=(
+            options.attempt_bnet_for_reference_ineligible
+        ),
         require_xray=options.require_xray,
         require_single_model=options.require_single_model,
         require_protein=options.require_protein,
@@ -167,6 +231,7 @@ def build_bnet_reference_database(
     ):
         attempted_count += 1
         writer.write_result(result)
+        temperature_cache_writer.write_result(result)
 
         if result.is_accepted:
             accepted_this_run += 1
@@ -185,6 +250,15 @@ def build_bnet_reference_database(
             )
 
     elapsed_seconds = monotonic() - start_time
+    final_reference_count = _finalize_reference_outputs(
+        options=options,
+        discovery=discovery,
+        writer=writer,
+        attempted_count=attempted_count,
+        accepted_this_run=accepted_this_run,
+        rejected_this_run=rejected_this_run,
+        already_processed_count=len(already_processed_pdb_ids),
+    )
 
     summary = BnetDatabaseBuildSummary(
         discovered_candidate_count=discovery.candidate_count,
@@ -193,6 +267,8 @@ def build_bnet_reference_database(
         attempted_count=attempted_count,
         accepted_count=accepted_this_run,
         rejected_count=rejected_this_run,
+        all_scores_count=writer.all_scores_count,
+        final_reference_count=final_reference_count,
         elapsed_seconds=elapsed_seconds,
     )
 
@@ -326,6 +402,11 @@ def _process_candidate_worker(
     try:
         return process_pdb_redo_candidate(
             candidate,
+            temperature_cache=worker_options.temperature_cache,
+            fetch_rcsb_temperature=worker_options.fetch_rcsb_temperature,
+            attempt_bnet_for_reference_ineligible=(
+                worker_options.attempt_bnet_for_reference_ineligible
+            ),
             require_xray=worker_options.require_xray,
             require_single_model=worker_options.require_single_model,
             require_protein=worker_options.require_protein,
@@ -376,6 +457,150 @@ def _take(
             return
 
 
+def _finalize_reference_outputs(
+    *,
+    options: BnetDatabaseBuildOptions,
+    discovery: PdbRedoDiscoveryResult,
+    writer: BnetDatabaseCsvWriter,
+    attempted_count: int,
+    accepted_this_run: int,
+    rejected_this_run: int,
+    already_processed_count: int,
+) -> int:
+    if options.final_reference_csv_path is None:
+        return 0
+
+    final_reference_count = write_sorted_reference_csv_from_accepted_csv(
+        options.accepted_csv_path,
+        options.final_reference_csv_path,
+    )
+    _write_reference_manifest(
+        options=options,
+        discovery=discovery,
+        writer=writer,
+        attempted_count=attempted_count,
+        accepted_this_run=accepted_this_run,
+        rejected_this_run=rejected_this_run,
+        already_processed_count=already_processed_count,
+        final_reference_count=final_reference_count,
+    )
+    return final_reference_count
+
+
+def _write_reference_manifest(
+    *,
+    options: BnetDatabaseBuildOptions,
+    discovery: PdbRedoDiscoveryResult,
+    writer: BnetDatabaseCsvWriter,
+    attempted_count: int,
+    accepted_this_run: int,
+    rejected_this_run: int,
+    already_processed_count: int,
+    final_reference_count: int,
+) -> None:
+    if options.final_reference_csv_path is None:
+        return
+
+    manifest_path = (
+        options.manifest_path
+        if options.manifest_path is not None
+        else options.final_reference_csv_path.with_suffix(".manifest.json")
+    )
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+
+    database_id = options.database_id or _default_database_id()
+    manifest = {
+        "database_id": database_id,
+        "schema_version": "1.0",
+        "metric_kind": "protein_cryo_asp_glu_bnet",
+        "source": "PDB-REDO local mirror",
+        "source_root": str(options.pdb_redo_root),
+        "pdb_redo_snapshot": "partial local mirror",
+        "partial_mirror": True,
+        "eligibility_policy_id": STRICT_CRYO_ELIGIBILITY_POLICY_ID,
+        "created_utc": datetime.now(UTC).isoformat(),
+        "entry_count": final_reference_count,
+        "candidate_counts": {
+            "discovered": discovery.candidate_count,
+            "discovery_skipped": discovery.skipped_count,
+            "already_processed": already_processed_count,
+            "attempted_this_run": attempted_count,
+            "accepted_this_run": accepted_this_run,
+            "rejected_this_run": rejected_this_run,
+            "accepted_csv_total": writer.accepted_count,
+            "rejected_csv_total": writer.rejected_count,
+            "all_scores_csv_total": writer.all_scores_count,
+        },
+        "paths": {
+            "accepted_working_csv": str(options.accepted_csv_path),
+            "accepted_details_csv": (
+                None
+                if options.accepted_details_csv_path is None
+                else str(options.accepted_details_csv_path)
+            ),
+            "rejected_csv": (
+                None
+                if options.rejected_csv_path is None
+                else str(options.rejected_csv_path)
+            ),
+            "all_scores_csv": (
+                None
+                if options.all_scores_csv_path is None
+                else str(options.all_scores_csv_path)
+            ),
+            "temperature_cache_csv": (
+                None
+                if options.temperature_cache_csv_path is None
+                else str(options.temperature_cache_csv_path)
+            ),
+            "final_reference_csv": str(options.final_reference_csv_path),
+        },
+        "temperature_recovery": {
+            "eligibility_temperature": "_diffrn.ambient_temp collection temperature",
+            "diagnostic_temperature": (
+                "_exptl_crystal_grow.temp crystal-growth temperature"
+            ),
+            "order": [
+                "PDB-REDO data.json collection temperature",
+                "PDB-REDO final mmCIF collection temperature",
+                "PDB-REDO local companion CIF collection temperature",
+                "compact collection-temperature cache",
+                "canonical RCSB mmCIF collection temperature when enabled",
+            ],
+            "fetch_rcsb_temperature": options.fetch_rcsb_temperature,
+        },
+        "reference_filters": {
+            "require_xray": options.require_xray,
+            "require_single_model": options.require_single_model,
+            "require_protein": options.require_protein,
+            "reject_nucleic_acid": options.reject_nucleic_acid,
+            "max_resolution_angstrom": 3.5,
+            "max_r_free_exclusive": 0.4,
+            "temperature_range_k": [80.0, 120.0],
+            "min_asp_glu_carboxyl_oxygen_count": 20,
+            "require_per_atom_b_factors": True,
+            "per_atom_b_factor_model_policy": {
+                "accepted_pdb_redo_breftype_values": sorted(
+                    PER_ATOM_B_FACTOR_REFINEMENT_TYPES
+                ),
+                "rejected_pdb_redo_breftype_values": sorted(
+                    NON_PER_ATOM_B_FACTOR_REFINEMENT_TYPES
+                ),
+                "fallback": STRUCTURAL_B_FACTOR_MODEL_CHECK_SOURCE,
+            },
+        },
+    }
+
+    with manifest_path.open("w", encoding="utf-8") as handle:
+        json.dump(manifest, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+
+
+def _default_database_id() -> str:
+    date_text = datetime.now(UTC).strftime("%Y%m%d")
+    return f"{DEFAULT_REFERENCE_DATABASE_ID_PREFIX}_{date_text}"
+
+
 def _filter_candidates(
     candidates: tuple[PdbRedoCandidate, ...],
     *,
@@ -421,12 +646,15 @@ def _print_unexpected_worker_error(result: PdbRedoProcessResult) -> None:
 def _read_processed_pdb_ids(
     accepted_csv_path: Path,
     rejected_csv_path: Path | None,
+    all_scores_csv_path: Path | None,
 ) -> frozenset[str]:
     pdb_ids: set[str] = set()
 
     pdb_ids.update(_read_pdb_ids_from_csv(accepted_csv_path))
     if rejected_csv_path is not None:
         pdb_ids.update(_read_pdb_ids_from_csv(rejected_csv_path))
+    if all_scores_csv_path is not None:
+        pdb_ids.update(_read_pdb_ids_from_csv(all_scores_csv_path))
 
     return frozenset(pdb_ids)
 
@@ -486,6 +714,12 @@ def _print_build_start(
         print(f"  Accepted details CSV: {options.accepted_details_csv_path}")
     if options.rejected_csv_path is not None:
         print(f"  Rejected CSV: {options.rejected_csv_path}")
+    if options.all_scores_csv_path is not None:
+        print(f"  All-scores CSV: {options.all_scores_csv_path}")
+    if options.final_reference_csv_path is not None:
+        print(f"  Final sorted reference CSV: {options.final_reference_csv_path}")
+    if options.temperature_cache_csv_path is not None:
+        print(f"  Temperature cache CSV: {options.temperature_cache_csv_path}")
 
     print(f"  Discovered candidates: {discovery.candidate_count}")
     print(f"  Discovery skipped: {discovery.skipped_count}")
@@ -497,6 +731,11 @@ def _print_build_start(
         print(f"  Max tasks in flight: {options.max_tasks_in_flight}")
     else:
         print(f"  Max tasks in flight: {options.jobs * 2}")
+    print(f"  Fetch RCSB temperatures: {options.fetch_rcsb_temperature}")
+    print(
+        "  Attempt Bnet for reference-ineligible entries: "
+        f"{options.attempt_bnet_for_reference_ineligible}"
+    )
 
     print()
 
@@ -534,6 +773,8 @@ def _print_build_summary(
     print(f"  Rejected this run: {summary.rejected_count}")
     print(f"  Accepted CSV total rows: {writer.accepted_count}")
     print(f"  Rejected CSV total rows: {writer.rejected_count}")
+    print(f"  All-scores CSV total rows: {writer.all_scores_count}")
+    print(f"  Final reference rows: {summary.final_reference_count}")
     print(f"  Elapsed seconds: {summary.elapsed_seconds:.1f}")
 
     if summary.elapsed_seconds > 0:
@@ -543,6 +784,8 @@ def _print_build_summary(
 
 def parse_args(argv: list[str] | None = None) -> BnetDatabaseBuildOptions:
     """Parse command-line arguments into build options."""
+
+    default_jobs = default_worker_count()
 
     parser = argparse.ArgumentParser(
         description="Build a Bnet reference database from a local PDB-REDO mirror.",
@@ -565,21 +808,90 @@ def parse_args(argv: list[str] | None = None) -> BnetDatabaseBuildOptions:
     parser.add_argument(
         "--accepted-details-csv",
         type=Path,
-        default=None,
-        help="Optional detailed accepted-row CSV.",
+        default=DEFAULT_ACCEPTED_DETAILS_CSV_PATH,
+        help=(
+            "Detailed accepted-row CSV. "
+            f"Default: {DEFAULT_ACCEPTED_DETAILS_CSV_PATH}"
+        ),
     )
     parser.add_argument(
         "--rejected-csv",
         type=Path,
+        default=DEFAULT_REJECTED_CSV_PATH,
+        help=f"Rejected-row CSV. Default: {DEFAULT_REJECTED_CSV_PATH}",
+    )
+    parser.add_argument(
+        "--all-scores-csv",
+        type=Path,
+        default=DEFAULT_ALL_SCORES_CSV_PATH,
+        help=(
+            "Broad diagnostics CSV for every processed candidate. "
+            f"Default: {DEFAULT_ALL_SCORES_CSV_PATH}"
+        ),
+    )
+    parser.add_argument(
+        "--final-reference-csv",
+        type=Path,
+        default=DEFAULT_FINAL_REFERENCE_CSV_PATH,
+        help=(
+            "Final sorted 4-column reference CSV. "
+            f"Default: {DEFAULT_FINAL_REFERENCE_CSV_PATH}"
+        ),
+    )
+    parser.add_argument(
+        "--manifest",
+        type=Path,
         default=None,
-        help="Optional rejected-row CSV.",
+        help="Optional manifest path. Defaults to <final-reference>.manifest.json.",
+    )
+    parser.add_argument(
+        "--temperature-cache-csv",
+        type=Path,
+        default=DEFAULT_TEMPERATURE_CACHE_CSV_PATH,
+        help=(
+            "Compact RCSB collection-temperature cache CSV. "
+            f"Default: {DEFAULT_TEMPERATURE_CACHE_CSV_PATH}"
+        ),
+    )
+    parser.add_argument(
+        "--database-id",
+        default=None,
+        help="Database identifier written to the final manifest.",
+    )
+    parser.add_argument(
+        "--no-accepted-details-csv",
+        action="store_true",
+        help="Disable accepted-details CSV output.",
+    )
+    parser.add_argument(
+        "--no-rejected-csv",
+        action="store_true",
+        help="Disable rejected-row CSV output.",
+    )
+    parser.add_argument(
+        "--no-all-scores-csv",
+        action="store_true",
+        help="Disable broad all-scores diagnostics CSV output.",
+    )
+    parser.add_argument(
+        "--no-final-reference-csv",
+        action="store_true",
+        help="Do not write the final sorted reference CSV or manifest.",
+    )
+    parser.add_argument(
+        "--no-temperature-cache-csv",
+        action="store_true",
+        help="Disable compact temperature cache output.",
     )
 
     parser.add_argument(
         "--jobs",
         type=int,
-        default=max(1, (os.cpu_count() or 2) - 1),
-        help="Number of worker processes.",
+        default=default_jobs,
+        help=(
+            "Number of worker processes. Default: "
+            f"about 90%% of CPU cores; currently {default_jobs}."
+        ),
     )
     parser.add_argument(
         "--max-tasks-in-flight",
@@ -587,7 +899,7 @@ def parse_args(argv: list[str] | None = None) -> BnetDatabaseBuildOptions:
         default=None,
         help=(
             "Maximum submitted but unfinished worker tasks. "
-            "Defaults to 2 * jobs."
+            "Default: 2 * jobs."
         ),
     )
     parser.add_argument(
@@ -612,8 +924,8 @@ def parse_args(argv: list[str] | None = None) -> BnetDatabaseBuildOptions:
         "--no-resume",
         action="store_true",
         help=(
-            "Do not skip PDB IDs already present in the accepted CSV and, "
-            "when --rejected-csv is supplied, the rejected CSV."
+            "Do not skip PDB IDs already present in existing accepted, "
+            "rejected, or all-scores CSV outputs."
         ),
     )
     parser.add_argument(
@@ -645,7 +957,31 @@ def parse_args(argv: list[str] | None = None) -> BnetDatabaseBuildOptions:
     parser.add_argument(
         "--allow-nucleic-acid",
         action="store_true",
-        help="Do not reject entries containing nucleic-acid polymers.",
+        help=(
+            "Do not reject entries containing nucleic-acid polymers. This is "
+            "already the default for RABDAM2-compatible protein Bnet builds."
+        ),
+    )
+    parser.add_argument(
+        "--reject-nucleic-acid",
+        action="store_true",
+        help="Reject entries containing nucleic-acid polymers.",
+    )
+    parser.add_argument(
+        "--reference-only-prefilter",
+        action="store_true",
+        help=(
+            "Skip Bnet calculation for entries that fail cheap reference "
+            "eligibility checks."
+        ),
+    )
+    parser.add_argument(
+        "--fetch-rcsb-temperatures",
+        action="store_true",
+        help=(
+            "Download canonical RCSB mmCIF metadata only when local/cache "
+            "temperature cannot verify strict cryo eligibility."
+        ),
     )
     parser.add_argument(
         "--include-traceback",
@@ -658,8 +994,21 @@ def parse_args(argv: list[str] | None = None) -> BnetDatabaseBuildOptions:
     return BnetDatabaseBuildOptions(
         pdb_redo_root=args.pdb_redo_root,
         accepted_csv_path=args.accepted_csv,
-        accepted_details_csv_path=args.accepted_details_csv,
-        rejected_csv_path=args.rejected_csv,
+        accepted_details_csv_path=(
+            None if args.no_accepted_details_csv else args.accepted_details_csv
+        ),
+        rejected_csv_path=None if args.no_rejected_csv else args.rejected_csv,
+        all_scores_csv_path=(
+            None if args.no_all_scores_csv else args.all_scores_csv
+        ),
+        final_reference_csv_path=(
+            None if args.no_final_reference_csv else args.final_reference_csv
+        ),
+        manifest_path=args.manifest,
+        temperature_cache_csv_path=(
+            None if args.no_temperature_cache_csv else args.temperature_cache_csv
+        ),
+        database_id=args.database_id,
         require_data_json=not args.allow_missing_data_json,
         recursive_discovery=not args.no_recursive_discovery,
         overwrite=args.overwrite,
@@ -667,11 +1016,19 @@ def parse_args(argv: list[str] | None = None) -> BnetDatabaseBuildOptions:
         max_candidates=args.max_candidates,
         progress_every=args.progress_every,
         jobs=args.jobs,
-        max_tasks_in_flight=args.max_tasks_in_flight,
+        max_tasks_in_flight=(
+            args.max_tasks_in_flight
+            if args.max_tasks_in_flight is not None
+            else default_max_tasks_in_flight(args.jobs)
+        ),
         require_xray=not args.allow_non_xray,
         require_single_model=not args.allow_multiple_models,
         require_protein=not args.allow_no_protein,
-        reject_nucleic_acid=not args.allow_nucleic_acid,
+        reject_nucleic_acid=(
+            args.reject_nucleic_acid and not args.allow_nucleic_acid
+        ),
+        attempt_bnet_for_reference_ineligible=not args.reference_only_prefilter,
+        fetch_rcsb_temperature=args.fetch_rcsb_temperatures,
         include_traceback=args.include_traceback,
     )
 
@@ -698,9 +1055,17 @@ __all__ = [
     "BnetDatabaseBuildOptions",
     "BnetDatabaseBuildSummary",
     "DEFAULT_ACCEPTED_CSV_PATH",
+    "DEFAULT_ACCEPTED_DETAILS_CSV_PATH",
+    "DEFAULT_ALL_SCORES_CSV_PATH",
     "DEFAULT_DATABASE_CSV_PATH",
+    "DEFAULT_FINAL_REFERENCE_CSV_PATH",
     "DEFAULT_OUTPUT_DIR",
+    "DEFAULT_REJECTED_CSV_PATH",
+    "DEFAULT_TEMPERATURE_CACHE_CSV_PATH",
+    "STRICT_CRYO_ELIGIBILITY_POLICY_ID",
     "build_bnet_reference_database",
+    "default_max_tasks_in_flight",
+    "default_worker_count",
     "main",
     "parse_args",
 ]

@@ -16,6 +16,7 @@ multiprocessing, resume logic, and output happens in build.py/outputs.py.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -54,6 +55,7 @@ from .eligibility import (
 from .metadata import (
     PdbRedoMetadata,
     PdbRedoMetadataError,
+    TemperatureCacheEntry,
     read_pdb_redo_metadata,
 )
 
@@ -82,6 +84,11 @@ class PdbRedoRejectReason(str, Enum):
     HAS_NUCLEIC_ACID = "has_nucleic_acid"
     RABDAM_ERROR = "rabdam_error"
     UNEXPECTED_WORKER_ERROR = "unexpected_worker_error"
+
+
+PER_ATOM_B_FACTOR_REFINEMENT_TYPES = frozenset({"ISOT", "ANISOT"})
+NON_PER_ATOM_B_FACTOR_REFINEMENT_TYPES = frozenset({"OVER"})
+STRUCTURAL_B_FACTOR_MODEL_CHECK_SOURCE = "structure_backbone_b_factor_check"
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +126,10 @@ class AcceptedBnetReferenceRow:
     has_asp_glu_residue_with_total_occupancy_below_one: bool
 
     experimental_methods: tuple[str, ...]
+    uses_per_atom_b_factors: bool = True
+    b_factor_model_source: str | None = None
+    b_factor_refinement_type: str | None = None
+    b_factor_refinement_type_source: str | None = None
     metadata_warnings: tuple[str, ...] = field(default_factory=tuple)
     structure_check_warnings: tuple[str, ...] = field(default_factory=tuple)
 
@@ -126,6 +137,14 @@ class AcceptedBnetReferenceRow:
     r_work_source: str | None = None
     r_free_source: str | None = None
     temperature_source: str | None = None
+    temperature_values_k: tuple[float, ...] = field(default_factory=tuple)
+    temperature_sources: tuple[str, ...] = field(default_factory=tuple)
+    growth_temperature_k: float | None = None
+    growth_temperature_values_k: tuple[float, ...] = field(default_factory=tuple)
+    growth_temperature_source: str | None = None
+    growth_temperature_sources: tuple[str, ...] = field(default_factory=tuple)
+    temperature_cache_status: str | None = None
+    temperature_cache_message: str | None = None
     wilson_b_source: str | None = None
     b_factor_restraint_weight_source: str | None = None
 
@@ -156,6 +175,27 @@ class RejectedBnetReferenceRow:
 
     metadata_warnings: tuple[str, ...] = field(default_factory=tuple)
     structure_check_warnings: tuple[str, ...] = field(default_factory=tuple)
+    temperature_values_k: tuple[float, ...] = field(default_factory=tuple)
+    temperature_sources: tuple[str, ...] = field(default_factory=tuple)
+    temperature_source: str | None = None
+    growth_temperature_k: float | None = None
+    growth_temperature_values_k: tuple[float, ...] = field(default_factory=tuple)
+    growth_temperature_source: str | None = None
+    growth_temperature_sources: tuple[str, ...] = field(default_factory=tuple)
+    temperature_cache_status: str | None = None
+    temperature_cache_message: str | None = None
+    r_work: float | None = None
+    wilson_b: float | None = None
+    b_factor_restraint_weight: float | None = None
+    b_factor_refinement_type: str | None = None
+    r_work_source: str | None = None
+    r_free_source: str | None = None
+    resolution_source: str | None = None
+    wilson_b_source: str | None = None
+    b_factor_restraint_weight_source: str | None = None
+    b_factor_refinement_type_source: str | None = None
+    uses_per_atom_b_factors: bool | None = None
+    b_factor_model_source: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,21 +226,34 @@ class PdbRedoProcessResult:
             )
 
 
+@dataclass(frozen=True, slots=True)
+class _BFactorModelDecision:
+    uses_per_atom_b_factors: bool
+    source: str
+
+
 def process_pdb_redo_candidate(
     candidate: PdbRedoCandidate,
     *,
     workflow_options: BDamageWorkflowOptions | None = None,
     preparation_options: StructurePreparationOptions | None = None,
+    temperature_cache: Mapping[str, TemperatureCacheEntry] | None = None,
+    fetch_rcsb_temperature: bool = False,
+    attempt_bnet_for_reference_ineligible: bool = False,
     require_xray: bool = True,
     require_single_model: bool = True,
     require_protein: bool = True,
-    reject_nucleic_acid: bool = True,
+    reject_nucleic_acid: bool = False,
     include_traceback: bool = False,
 ) -> PdbRedoProcessResult:
     """Process one PDB-REDO candidate into an accepted or rejected result."""
 
     try:
-        metadata = read_pdb_redo_metadata(candidate)
+        metadata = read_pdb_redo_metadata(
+            candidate,
+            temperature_cache=temperature_cache,
+            fetch_rcsb_temperature=fetch_rcsb_temperature,
+        )
     except PdbRedoMetadataError as error:
         return _rejected_result_from_exception(
             candidate,
@@ -228,10 +281,12 @@ def process_pdb_redo_candidate(
         candidate=candidate,
         metadata=metadata,
         checks=checks,
-        require_xray=require_xray,
+        require_xray=require_xray and not attempt_bnet_for_reference_ineligible,
         require_single_model=require_single_model,
         require_protein=require_protein,
-        reject_nucleic_acid=reject_nucleic_acid,
+        reject_nucleic_acid=(
+            reject_nucleic_acid and not attempt_bnet_for_reference_ineligible
+        ),
     )
     if domain_rejection is not None:
         return PdbRedoProcessResult(
@@ -240,7 +295,7 @@ def process_pdb_redo_candidate(
         )
 
     prefilter = _check_prefilter_eligibility(metadata=metadata, checks=checks)
-    if not prefilter.is_eligible:
+    if not prefilter.is_eligible and not attempt_bnet_for_reference_ineligible:
         return PdbRedoProcessResult(
             pdb_id=candidate.pdb_id,
             rejected=_rejected_from_eligibility(
@@ -276,6 +331,23 @@ def process_pdb_redo_candidate(
             metadata=metadata,
             checks=checks,
             include_traceback=include_traceback,
+        )
+
+    reference_domain_rejection = _domain_filter_rejection(
+        candidate=candidate,
+        metadata=metadata,
+        checks=checks,
+        require_xray=require_xray,
+        require_single_model=require_single_model,
+        require_protein=require_protein,
+        reject_nucleic_acid=reject_nucleic_acid,
+        stage=PdbRedoProcessStage.FINAL_ELIGIBILITY,
+        bnet=bnet_result.bnet,
+    )
+    if reference_domain_rejection is not None:
+        return PdbRedoProcessResult(
+            pdb_id=candidate.pdb_id,
+            rejected=reference_domain_rejection,
         )
 
     final_eligibility = _check_final_eligibility(
@@ -343,15 +415,16 @@ def _check_prefilter_eligibility(
     metadata: PdbRedoMetadata,
     checks: PdbRedoStructureChecks,
 ) -> BnetEligibilityResult:
+    b_factor_model = _b_factor_model_decision(metadata=metadata, checks=checks)
     context = BnetEligibilityContext(
         resolution_angstrom=metadata.resolution_angstrom,
         r_free=metadata.r_free,
-        temperature_k=metadata.temperature_k,
+        temperature_k=metadata.temperature_values_k or metadata.temperature_k,
         asp_glu_carboxyl_oxygen_count=checks.asp_glu_carboxyl_oxygen_count,
         has_asp_glu_residue_with_total_occupancy_below_one=(
             checks.has_asp_glu_residue_with_total_occupancy_below_one
         ),
-        uses_per_atom_b_factors=checks.has_nonflat_protein_b_factors,
+        uses_per_atom_b_factors=b_factor_model.uses_per_atom_b_factors,
         bnet=None,
     )
 
@@ -367,15 +440,16 @@ def _check_final_eligibility(
     checks: PdbRedoStructureChecks,
     bnet_result: ProteinBnetResult,
 ) -> BnetEligibilityResult:
+    b_factor_model = _b_factor_model_decision(metadata=metadata, checks=checks)
     context = BnetEligibilityContext(
         resolution_angstrom=metadata.resolution_angstrom,
         r_free=metadata.r_free,
-        temperature_k=metadata.temperature_k,
+        temperature_k=metadata.temperature_values_k or metadata.temperature_k,
         asp_glu_carboxyl_oxygen_count=bnet_result.site_count,
         has_asp_glu_residue_with_total_occupancy_below_one=(
             checks.has_asp_glu_residue_with_total_occupancy_below_one
         ),
-        uses_per_atom_b_factors=checks.has_nonflat_protein_b_factors,
+        uses_per_atom_b_factors=b_factor_model.uses_per_atom_b_factors,
         bnet=bnet_result.bnet,
     )
 
@@ -394,18 +468,21 @@ def _domain_filter_rejection(
     require_single_model: bool,
     require_protein: bool,
     reject_nucleic_acid: bool,
+    stage: PdbRedoProcessStage = PdbRedoProcessStage.DOMAIN_FILTER,
+    bnet: float | None = None,
 ) -> RejectedBnetReferenceRow | None:
     if require_single_model and checks.model_count != 1:
         return _rejected_row(
             candidate=candidate,
             metadata=metadata,
             checks=checks,
-            stage=PdbRedoProcessStage.DOMAIN_FILTER,
+            stage=stage,
             reason=PdbRedoRejectReason.MULTIPLE_MODELS.value,
             message=(
                 "Entry contains multiple models; PDB-REDO database processing "
                 f"expects one model, found {checks.model_count}."
             ),
+            bnet=bnet,
         )
 
     if require_xray and not checks.is_xray:
@@ -413,12 +490,13 @@ def _domain_filter_rejection(
             candidate=candidate,
             metadata=metadata,
             checks=checks,
-            stage=PdbRedoProcessStage.DOMAIN_FILTER,
+            stage=stage,
             reason=PdbRedoRejectReason.NOT_XRAY.value,
             message=(
                 "Entry is not marked as X-ray crystallography. "
                 f"Experimental methods: {checks.experimental_methods!r}."
             ),
+            bnet=bnet,
         )
 
     if require_protein and not checks.has_protein:
@@ -426,9 +504,10 @@ def _domain_filter_rejection(
             candidate=candidate,
             metadata=metadata,
             checks=checks,
-            stage=PdbRedoProcessStage.DOMAIN_FILTER,
+            stage=stage,
             reason=PdbRedoRejectReason.NO_PROTEIN.value,
             message="Entry does not contain a protein polymer.",
+            bnet=bnet,
         )
 
     if reject_nucleic_acid and checks.has_nucleic_acid:
@@ -436,9 +515,10 @@ def _domain_filter_rejection(
             candidate=candidate,
             metadata=metadata,
             checks=checks,
-            stage=PdbRedoProcessStage.DOMAIN_FILTER,
+            stage=stage,
             reason=PdbRedoRejectReason.HAS_NUCLEIC_ACID.value,
             message="Entry contains a nucleic-acid polymer.",
+            bnet=bnet,
         )
 
     return None
@@ -454,6 +534,8 @@ def _accepted_row(
 ) -> AcceptedBnetReferenceRow:
     if metadata.resolution_angstrom is None:
         raise ValueError("Accepted row cannot be created without resolution.")
+
+    b_factor_model = _b_factor_model_decision(metadata=metadata, checks=checks)
 
     return AcceptedBnetReferenceRow(
         pdb_id=candidate.pdb_id,
@@ -485,16 +567,58 @@ def _accepted_row(
             checks.has_asp_glu_residue_with_total_occupancy_below_one
         ),
         experimental_methods=checks.experimental_methods,
+        uses_per_atom_b_factors=b_factor_model.uses_per_atom_b_factors,
+        b_factor_model_source=b_factor_model.source,
+        b_factor_refinement_type=metadata.b_factor_refinement_type,
+        b_factor_refinement_type_source=(
+            metadata.b_factor_refinement_type_source
+        ),
         metadata_warnings=metadata.warnings,
         structure_check_warnings=checks.warnings,
         resolution_source=metadata.resolution_source,
         r_work_source=metadata.r_work_source,
         r_free_source=metadata.r_free_source,
         temperature_source=metadata.temperature_source,
+        temperature_values_k=metadata.temperature_values_k,
+        temperature_sources=metadata.temperature_sources,
+        growth_temperature_k=metadata.growth_temperature_k,
+        growth_temperature_values_k=metadata.growth_temperature_values_k,
+        growth_temperature_source=metadata.growth_temperature_source,
+        growth_temperature_sources=metadata.growth_temperature_sources,
+        temperature_cache_status=metadata.temperature_cache_status,
+        temperature_cache_message=metadata.temperature_cache_message,
         wilson_b_source=metadata.wilson_b_source,
         b_factor_restraint_weight_source=metadata.b_factor_restraint_weight_source,
         final_cif_path=candidate.final_cif_path,
         data_json_path=candidate.data_json_path,
+    )
+
+
+def _b_factor_model_decision(
+    *,
+    metadata: PdbRedoMetadata,
+    checks: PdbRedoStructureChecks,
+) -> _BFactorModelDecision:
+    refinement_type = metadata.b_factor_refinement_type
+    if refinement_type is not None:
+        normalized_refinement_type = refinement_type.strip().upper()
+        source = metadata.b_factor_refinement_type_source or "data_json:BREFTYPE"
+
+        if normalized_refinement_type in PER_ATOM_B_FACTOR_REFINEMENT_TYPES:
+            return _BFactorModelDecision(
+                uses_per_atom_b_factors=True,
+                source=source,
+            )
+
+        if normalized_refinement_type in NON_PER_ATOM_B_FACTOR_REFINEMENT_TYPES:
+            return _BFactorModelDecision(
+                uses_per_atom_b_factors=False,
+                source=source,
+            )
+
+    return _BFactorModelDecision(
+        uses_per_atom_b_factors=checks.has_nonflat_protein_b_factors,
+        source=STRUCTURAL_B_FACTOR_MODEL_CHECK_SOURCE,
     )
 
 
@@ -556,6 +680,12 @@ def _rejected_row(
     traceback_text: str | None = None,
     bnet: float | None = None,
 ) -> RejectedBnetReferenceRow:
+    b_factor_model = (
+        _b_factor_model_decision(metadata=metadata, checks=checks)
+        if metadata is not None and checks is not None
+        else None
+    )
+
     return RejectedBnetReferenceRow(
         pdb_id=candidate.pdb_id,
         stage=stage,
@@ -568,8 +698,67 @@ def _rejected_row(
         resolution_angstrom=(
             metadata.resolution_angstrom if metadata is not None else None
         ),
+        r_work=metadata.r_work if metadata is not None else None,
         r_free=metadata.r_free if metadata is not None else None,
         temperature_k=metadata.temperature_k if metadata is not None else None,
+        temperature_values_k=(
+            metadata.temperature_values_k if metadata is not None else ()
+        ),
+        temperature_sources=(
+            metadata.temperature_sources if metadata is not None else ()
+        ),
+        temperature_source=(
+            metadata.temperature_source if metadata is not None else None
+        ),
+        growth_temperature_k=(
+            metadata.growth_temperature_k if metadata is not None else None
+        ),
+        growth_temperature_values_k=(
+            metadata.growth_temperature_values_k if metadata is not None else ()
+        ),
+        growth_temperature_source=(
+            metadata.growth_temperature_source if metadata is not None else None
+        ),
+        growth_temperature_sources=(
+            metadata.growth_temperature_sources if metadata is not None else ()
+        ),
+        temperature_cache_status=(
+            metadata.temperature_cache_status if metadata is not None else None
+        ),
+        temperature_cache_message=(
+            metadata.temperature_cache_message if metadata is not None else None
+        ),
+        wilson_b=metadata.wilson_b if metadata is not None else None,
+        b_factor_restraint_weight=(
+            metadata.b_factor_restraint_weight if metadata is not None else None
+        ),
+        b_factor_refinement_type=(
+            metadata.b_factor_refinement_type if metadata is not None else None
+        ),
+        resolution_source=(
+            metadata.resolution_source if metadata is not None else None
+        ),
+        r_work_source=metadata.r_work_source if metadata is not None else None,
+        r_free_source=metadata.r_free_source if metadata is not None else None,
+        wilson_b_source=metadata.wilson_b_source if metadata is not None else None,
+        b_factor_restraint_weight_source=(
+            metadata.b_factor_restraint_weight_source
+            if metadata is not None
+            else None
+        ),
+        b_factor_refinement_type_source=(
+            metadata.b_factor_refinement_type_source
+            if metadata is not None
+            else None
+        ),
+        uses_per_atom_b_factors=(
+            b_factor_model.uses_per_atom_b_factors
+            if b_factor_model is not None
+            else None
+        ),
+        b_factor_model_source=(
+            b_factor_model.source if b_factor_model is not None else None
+        ),
         asp_glu_carboxyl_oxygen_count=(
             checks.asp_glu_carboxyl_oxygen_count if checks is not None else None
         ),
@@ -585,5 +774,8 @@ __all__ = [
     "PdbRedoProcessStage",
     "PdbRedoRejectReason",
     "RejectedBnetReferenceRow",
+    "NON_PER_ATOM_B_FACTOR_REFINEMENT_TYPES",
+    "PER_ATOM_B_FACTOR_REFINEMENT_TYPES",
+    "STRUCTURAL_B_FACTOR_MODEL_CHECK_SOURCE",
     "process_pdb_redo_candidate",
 ]
