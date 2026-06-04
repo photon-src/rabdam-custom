@@ -221,6 +221,108 @@ class PdbRedoProcessTests(unittest.TestCase):
             BnetEligibilityReason.MISSING_RESOLUTION.value,
         )
 
+    def test_remote_temperature_fetch_is_skipped_for_domain_rejection(
+        self,
+    ) -> None:
+        candidate = make_candidate()
+
+        with (
+            patch(
+                "database.process.read_pdb_redo_metadata",
+                return_value=make_metadata(temperature_k=None),
+            ) as metadata_mock,
+            patch(
+                "database.process.read_pdb_redo_structure_checks",
+                return_value=make_checks(has_protein=False),
+            ),
+            patch("database.process._calculate_rabdam_bnet") as calculate_mock,
+        ):
+            result = process_pdb_redo_candidate(
+                candidate,
+                fetch_rcsb_temperature=True,
+            )
+
+        calculate_mock.assert_not_called()
+        metadata_mock.assert_called_once()
+        self.assertFalse(metadata_mock.call_args.kwargs["fetch_rcsb_temperature"])
+        assert result.rejected is not None
+        self.assertEqual(result.rejected.stage, PdbRedoProcessStage.DOMAIN_FILTER)
+        self.assertEqual(
+            result.rejected.reason,
+            PdbRedoRejectReason.NO_PROTEIN.value,
+        )
+
+    def test_remote_temperature_fetch_runs_when_temperature_is_only_blocker(
+        self,
+    ) -> None:
+        candidate = make_candidate()
+
+        with (
+            patch(
+                "database.process.read_pdb_redo_metadata",
+                side_effect=(
+                    make_metadata(temperature_k=None),
+                    make_metadata(temperature_k=100.0),
+                ),
+            ) as metadata_mock,
+            patch(
+                "database.process.read_pdb_redo_structure_checks",
+                return_value=make_checks(),
+            ),
+            patch(
+                "database.process._calculate_rabdam_bnet",
+                return_value=(make_workflow_result(), make_bnet_result()),
+            ) as calculate_mock,
+        ):
+            result = process_pdb_redo_candidate(
+                candidate,
+                fetch_rcsb_temperature=True,
+            )
+
+        calculate_mock.assert_called_once()
+        self.assertEqual(metadata_mock.call_count, 2)
+        self.assertFalse(
+            metadata_mock.call_args_list[0].kwargs["fetch_rcsb_temperature"]
+        )
+        self.assertTrue(
+            metadata_mock.call_args_list[1].kwargs["fetch_rcsb_temperature"]
+        )
+        self.assertTrue(result.is_accepted)
+
+    def test_remote_temperature_fetch_is_skipped_when_other_prefilter_fails(
+        self,
+    ) -> None:
+        candidate = make_candidate()
+
+        with (
+            patch(
+                "database.process.read_pdb_redo_metadata",
+                return_value=make_metadata(temperature_k=None),
+            ) as metadata_mock,
+            patch(
+                "database.process.read_pdb_redo_structure_checks",
+                return_value=make_checks(asp_glu_carboxyl_oxygen_count=10),
+            ),
+            patch("database.process._calculate_rabdam_bnet") as calculate_mock,
+        ):
+            result = process_pdb_redo_candidate(
+                candidate,
+                fetch_rcsb_temperature=True,
+            )
+
+        calculate_mock.assert_not_called()
+        metadata_mock.assert_called_once()
+        self.assertFalse(metadata_mock.call_args.kwargs["fetch_rcsb_temperature"])
+        assert result.rejected is not None
+        self.assertEqual(
+            result.rejected.stage,
+            PdbRedoProcessStage.PREFILTER_ELIGIBILITY,
+        )
+        self.assertEqual(
+            result.rejected.reason,
+            BnetEligibilityReason.MISSING_TEMPERATURE.value,
+        )
+
     def test_reference_ineligible_candidate_can_still_record_raw_bnet(
         self,
     ) -> None:

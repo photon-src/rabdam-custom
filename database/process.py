@@ -48,6 +48,7 @@ from .checks import (
 )
 from .discover import PdbRedoCandidate
 from .eligibility import (
+    BnetEligibilityReason,
     BnetEligibilityContext,
     BnetEligibilityResult,
     check_bnet_reference_eligibility,
@@ -252,7 +253,7 @@ def process_pdb_redo_candidate(
         metadata = read_pdb_redo_metadata(
             candidate,
             temperature_cache=temperature_cache,
-            fetch_rcsb_temperature=fetch_rcsb_temperature,
+            fetch_rcsb_temperature=False,
         )
     except PdbRedoMetadataError as error:
         return _rejected_result_from_exception(
@@ -295,6 +296,24 @@ def process_pdb_redo_candidate(
         )
 
     prefilter = _check_prefilter_eligibility(metadata=metadata, checks=checks)
+    if fetch_rcsb_temperature and _should_fetch_remote_temperature(prefilter):
+        try:
+            metadata = read_pdb_redo_metadata(
+                candidate,
+                temperature_cache=temperature_cache,
+                fetch_rcsb_temperature=True,
+            )
+        except PdbRedoMetadataError as error:
+            return _rejected_result_from_exception(
+                candidate,
+                stage=PdbRedoProcessStage.METADATA,
+                reason=PdbRedoRejectReason.METADATA_ERROR.value,
+                message=str(error),
+                error=error,
+                include_traceback=include_traceback,
+            )
+        prefilter = _check_prefilter_eligibility(metadata=metadata, checks=checks)
+
     if not prefilter.is_eligible and not attempt_bnet_for_reference_ineligible:
         return PdbRedoProcessResult(
             pdb_id=candidate.pdb_id,
@@ -456,6 +475,23 @@ def _check_final_eligibility(
     return check_bnet_reference_eligibility(
         context,
         require_bnet=True,
+    )
+
+
+def _should_fetch_remote_temperature(
+    eligibility: BnetEligibilityResult,
+) -> bool:
+    """Return whether remote RCSB temperature could make this entry eligible."""
+
+    if eligibility.is_eligible:
+        return False
+
+    if not eligibility.issues:
+        return False
+
+    return all(
+        issue.reason is BnetEligibilityReason.MISSING_TEMPERATURE
+        for issue in eligibility.issues
     )
 
 

@@ -6,8 +6,6 @@ from unittest.mock import patch
 from database.build import (
     BnetDatabaseBuildOptions,
     DEFAULT_ACCEPTED_CSV_PATH,
-    DEFAULT_ACCEPTED_DETAILS_CSV_PATH,
-    DEFAULT_ALL_SCORES_CSV_PATH,
     DEFAULT_DATABASE_CSV_PATH,
     DEFAULT_FINAL_REFERENCE_CSV_PATH,
     DEFAULT_REJECTED_CSV_PATH,
@@ -94,7 +92,7 @@ def make_worker_options(*, include_traceback: bool = False) -> _WorkerOptions:
     return _WorkerOptions(
         temperature_cache={},
         fetch_rcsb_temperature=False,
-        attempt_bnet_for_reference_ineligible=True,
+        attempt_bnet_for_reference_ineligible=False,
         require_xray=True,
         require_single_model=True,
         require_protein=True,
@@ -330,12 +328,9 @@ class BnetDatabaseBuildTests(unittest.TestCase):
 
         self.assertEqual(options.pdb_redo_root, Path("/tmp/pdb-redo"))
         self.assertEqual(options.accepted_csv_path, DEFAULT_ACCEPTED_CSV_PATH)
-        self.assertEqual(
-            options.accepted_details_csv_path,
-            DEFAULT_ACCEPTED_DETAILS_CSV_PATH,
-        )
+        self.assertIsNone(options.accepted_details_csv_path)
         self.assertEqual(options.rejected_csv_path, DEFAULT_REJECTED_CSV_PATH)
-        self.assertEqual(options.all_scores_csv_path, DEFAULT_ALL_SCORES_CSV_PATH)
+        self.assertIsNone(options.all_scores_csv_path)
         self.assertEqual(
             options.final_reference_csv_path,
             DEFAULT_FINAL_REFERENCE_CSV_PATH,
@@ -357,7 +352,32 @@ class BnetDatabaseBuildTests(unittest.TestCase):
             default_max_tasks_in_flight(options.jobs),
         )
         self.assertFalse(options.reject_nucleic_acid)
+        self.assertFalse(options.attempt_bnet_for_reference_ineligible)
+
+    def test_parse_args_can_enable_reference_ineligible_bnet_diagnostics(
+        self,
+    ) -> None:
+        options = parse_args(
+            [
+                "/tmp/pdb-redo",
+                "--calculate-reference-ineligible-bnet",
+            ]
+        )
+
         self.assertTrue(options.attempt_bnet_for_reference_ineligible)
+
+    def test_reference_only_prefilter_overrides_reference_ineligible_bnet_flag(
+        self,
+    ) -> None:
+        options = parse_args(
+            [
+                "/tmp/pdb-redo",
+                "--calculate-reference-ineligible-bnet",
+                "--reference-only-prefilter",
+            ]
+        )
+
+        self.assertFalse(options.attempt_bnet_for_reference_ineligible)
 
     def test_default_worker_count_uses_most_cpu_cores_without_cap(self) -> None:
         self.assertEqual(default_worker_count(cpu_count=1), 1)

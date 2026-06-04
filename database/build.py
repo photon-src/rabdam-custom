@@ -88,9 +88,9 @@ class BnetDatabaseBuildOptions:
 
     pdb_redo_root: Path
     accepted_csv_path: Path = DEFAULT_ACCEPTED_CSV_PATH
-    accepted_details_csv_path: Path | None = DEFAULT_ACCEPTED_DETAILS_CSV_PATH
+    accepted_details_csv_path: Path | None = None
     rejected_csv_path: Path | None = DEFAULT_REJECTED_CSV_PATH
-    all_scores_csv_path: Path | None = DEFAULT_ALL_SCORES_CSV_PATH
+    all_scores_csv_path: Path | None = None
     final_reference_csv_path: Path | None = DEFAULT_FINAL_REFERENCE_CSV_PATH
     manifest_path: Path | None = None
     temperature_cache_csv_path: Path | None = DEFAULT_TEMPERATURE_CACHE_CSV_PATH
@@ -111,7 +111,7 @@ class BnetDatabaseBuildOptions:
     require_single_model: bool = True
     require_protein: bool = True
     reject_nucleic_acid: bool = False
-    attempt_bnet_for_reference_ineligible: bool = True
+    attempt_bnet_for_reference_ineligible: bool = False
     fetch_rcsb_temperature: bool = False
 
     include_traceback: bool = False
@@ -808,10 +808,10 @@ def parse_args(argv: list[str] | None = None) -> BnetDatabaseBuildOptions:
     parser.add_argument(
         "--accepted-details-csv",
         type=Path,
-        default=DEFAULT_ACCEPTED_DETAILS_CSV_PATH,
+        default=None,
         help=(
-            "Detailed accepted-row CSV. "
-            f"Default: {DEFAULT_ACCEPTED_DETAILS_CSV_PATH}"
+            "Optional detailed accepted-row CSV. Disabled by default. "
+            f"Suggested path: {DEFAULT_ACCEPTED_DETAILS_CSV_PATH}"
         ),
     )
     parser.add_argument(
@@ -823,10 +823,10 @@ def parse_args(argv: list[str] | None = None) -> BnetDatabaseBuildOptions:
     parser.add_argument(
         "--all-scores-csv",
         type=Path,
-        default=DEFAULT_ALL_SCORES_CSV_PATH,
+        default=None,
         help=(
-            "Broad diagnostics CSV for every processed candidate. "
-            f"Default: {DEFAULT_ALL_SCORES_CSV_PATH}"
+            "Optional broad diagnostics CSV for every processed candidate. "
+            f"Disabled by default. Suggested path: {DEFAULT_ALL_SCORES_CSV_PATH}"
         ),
     )
     parser.add_argument(
@@ -972,7 +972,15 @@ def parse_args(argv: list[str] | None = None) -> BnetDatabaseBuildOptions:
         action="store_true",
         help=(
             "Skip Bnet calculation for entries that fail cheap reference "
-            "eligibility checks."
+            "eligibility checks. This is the default."
+        ),
+    )
+    parser.add_argument(
+        "--calculate-reference-ineligible-bnet",
+        action="store_true",
+        help=(
+            "Also run RABDAM/Bnet for entries that fail cheap reference "
+            "eligibility checks. This is slower and intended for diagnostics."
         ),
     )
     parser.add_argument(
@@ -1027,7 +1035,10 @@ def parse_args(argv: list[str] | None = None) -> BnetDatabaseBuildOptions:
         reject_nucleic_acid=(
             args.reject_nucleic_acid and not args.allow_nucleic_acid
         ),
-        attempt_bnet_for_reference_ineligible=not args.reference_only_prefilter,
+        attempt_bnet_for_reference_ineligible=(
+            args.calculate_reference_ineligible_bnet
+            and not args.reference_only_prefilter
+        ),
         fetch_rcsb_temperature=args.fetch_rcsb_temperatures,
         include_traceback=args.include_traceback,
     )
