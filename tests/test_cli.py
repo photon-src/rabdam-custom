@@ -15,6 +15,7 @@ from crystal.symmetry import (
     SymmetryExpandedStructure,
     UnitCellParameters,
 )
+from crystal.translate import TranslatedAtom
 from crystal.trim import CartesianBounds, TrimmedCrystalBlock
 from input.reader import AtomRecord, StructureMetadata
 from input.resolver import (
@@ -26,6 +27,7 @@ from packing.density import PackingDensityAtomResult, PackingDensityResult
 from rabdam.cli import (
     CITATIONS_MESSAGE,
     MISSING_STRUCTURE_INPUT_MESSAGE,
+    RabdamBatchCliResult,
     RabdamCliResult,
     _build_parser,
     calculate_default_bnet_percentile,
@@ -160,7 +162,10 @@ def make_cli_result(
         z_max=1.0,
     )
     trimmed_block = TrimmedCrystalBlock(
-        atoms=(object(), object()),
+        atoms=(
+            TranslatedAtom(1, 1, 0, 1, True, 0, 0, 0, 1.0, 2.0, 3.0),
+            TranslatedAtom(2, 2, 0, 2, False, 0, 0, 0, 4.0, 5.0, 6.0),
+        ),
         reference_bounds=bounds,
         trim_bounds=bounds,
         padding=7.0,
@@ -275,7 +280,9 @@ class CliArgumentTests(unittest.TestCase):
         preparation_options = preparation_options_from_args(args)
 
         self.assertEqual(args.structure_input, "example.cif")
+        self.assertEqual(args.structure_inputs, ["example.cif"])
         self.assertEqual(args.output_csv, "out.csv")
+        self.assertEqual(args.output_dir, "output")
         self.assertEqual(args.download_dir, "downloads/rcsb")
         self.assertTrue(args.overwrite_download)
         self.assertEqual(workflow_options.packing_density_threshold, 8.5)
@@ -304,6 +311,18 @@ class CliArgumentTests(unittest.TestCase):
         args = parse_args(["1LYZ"])
 
         self.assertEqual(args.download_dir, "downloads/rcsb")
+
+    def test_output_defaults_to_output_directory(self) -> None:
+        args = parse_args(["example.cif"])
+
+        self.assertIsNone(args.output_csv)
+        self.assertEqual(args.output_dir, "output")
+
+    def test_parse_accepts_multiple_structure_inputs(self) -> None:
+        args = parse_args(["1LYZ", "2BLP", "model.cif"])
+
+        self.assertEqual(args.structure_inputs, ["1LYZ", "2BLP", "model.cif"])
+        self.assertIsNone(args.structure_input)
 
     def test_invalid_input_returns_cli_error(self) -> None:
         stdout = StringIO()
@@ -362,7 +381,10 @@ class CliArgumentTests(unittest.TestCase):
     def test_help_is_grouped_by_option_tier(self) -> None:
         help_text = _build_parser().format_help()
 
-        self.assertIn("usage: rabdam STRUCTURE_INPUT [options]", help_text)
+        self.assertIn(
+            "usage: rabdam STRUCTURE_INPUT [STRUCTURE_INPUT ...] [options]",
+            help_text,
+        )
         self.assertIn("input:", help_text)
         self.assertIn("general options:", help_text)
         self.assertIn("output and download options:", help_text)
@@ -400,6 +422,8 @@ class CliArgumentTests(unittest.TestCase):
         self.assertIn("Print citation information and exit.", general_help)
         self.assertIn("-q, --quiet", general_help)
         self.assertIn("-o PATH, --output-csv PATH", output_download_help)
+        self.assertIn("Default: output/<structure>_BDamage.csv", output_download_help)
+        self.assertIn("--output-dir DIR", output_download_help)
         self.assertIn("--download-dir DIR", output_download_help)
         self.assertIn("--overwrite-download", output_download_help)
         self.assertIn("--packing-density-threshold FLOAT", bdamage_help)
@@ -748,7 +772,7 @@ class CliSummaryTests(unittest.TestCase):
             patch(
                 "rabdam.cli.write_bdamage_csv",
                 side_effect=lambda **_: stage_calls.append("csv"),
-            ),
+            ) as write_csv_mock,
             patch(
                 "rabdam.cli.calculate_protein_bnet",
                 side_effect=lambda **_: (
@@ -779,10 +803,54 @@ class CliSummaryTests(unittest.TestCase):
         self.assertIn("Bnet percentile: unavailable", stdout.getvalue())
         self.assertEqual(stage_calls, ["bdamage", "csv", "bnet", "percentile"])
         self.assertEqual(
+            write_csv_mock.call_args.kwargs["output_path"],
+            Path("output") / "example_BDamage.csv",
+        )
+        self.assertEqual(
             percentile_mock.call_args.kwargs["resolution_angstrom"],
             1.7,
         )
         self.assertEqual(stderr.getvalue(), "")
+
+    def test_run_from_args_rejects_output_csv_for_batch(self) -> None:
+        args = parse_args(["1LYZ", "2BLP", "--output-csv", "out.csv"])
+
+        with self.assertRaises(ValueError):
+            run_from_args(
+                args,
+                stdout=StringIO(),
+                stderr=StringIO(),
+                total_runtime_start=1.0,
+            )
+
+    def test_run_from_args_batch_continues_after_item_failure(self) -> None:
+        args = parse_args(["bad", "good", "--quiet"])
+        stdout = StringIO()
+        stderr = StringIO()
+
+        with (
+            patch(
+                "rabdam.cli.run_single_structure_from_args",
+                side_effect=[ValueError("bad input"), make_cli_result()],
+            ) as run_one,
+            patch("rabdam.cli.perf_counter", side_effect=[1.0, 2.0, 3.0]),
+        ):
+            result = run_from_args(
+                args,
+                stdout=stdout,
+                stderr=stderr,
+                total_runtime_start=0.0,
+            )
+
+        self.assertIsInstance(result, RabdamBatchCliResult)
+        assert isinstance(result, RabdamBatchCliResult)
+        self.assertEqual(len(result.results), 1)
+        self.assertEqual(len(result.errors), 1)
+        self.assertTrue(result.has_errors)
+        self.assertEqual(result.errors[0].structure_input, "bad")
+        self.assertIn("rabdam: error: bad: bad input", stderr.getvalue())
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(run_one.call_count, 2)
 
 
 class BDamageCsvWriterTests(unittest.TestCase):

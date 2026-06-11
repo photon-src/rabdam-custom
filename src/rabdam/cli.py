@@ -8,6 +8,7 @@ import csv
 from dataclasses import dataclass
 import math
 from pathlib import Path
+import re
 import sys
 from time import perf_counter
 from typing import TextIO, TypeVar
@@ -46,7 +47,8 @@ from packing.density import (
 from structure.models import StructurePreparationOptions
 
 
-DEFAULT_OUTPUT_CSV = Path("rabdam_BDamage.csv")
+DEFAULT_OUTPUT_DIR = Path("output")
+DEFAULT_OUTPUT_CSV_PATTERN = "output/<structure>_BDamage.csv"
 DEFAULT_DOWNLOAD_DIR = DEFAULT_RCSB_DOWNLOAD_DIR
 CITATIONS_MESSAGE = """Please cite:
 
@@ -64,12 +66,13 @@ Bnet / Bnet percentile:
 MISSING_STRUCTURE_INPUT_MESSAGE = """rabdam: error: missing required argument: structure_input
 
 Usage:
-  rabdam STRUCTURE_INPUT [options]
+  rabdam STRUCTURE_INPUT [STRUCTURE_INPUT ...] [options]
 
 Examples:
   rabdam example.cif
   rabdam 1LYZ
-  rabdam example.cif -o rabdam_BDamage.csv
+  rabdam example.cif 1LYZ
+  rabdam example.cif -o output/example_BDamage.csv
 
 Run 'rabdam --help' for all options."""
 
@@ -121,14 +124,38 @@ class RabdamCliResult:
     bnet_percentile_unavailable_reason: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class RabdamBatchItemError:
+    """Failure for one input in a batch run."""
+
+    structure_input: str
+    error: Exception
+
+
+@dataclass(frozen=True, slots=True)
+class RabdamBatchCliResult:
+    """Result returned by a batch CLI run."""
+
+    results: tuple[RabdamCliResult, ...]
+    errors: tuple[RabdamBatchItemError, ...]
+    output_dir: Path
+    elapsed_seconds: float
+
+    @property
+    def has_errors(self) -> bool:
+        """Return whether any batch item failed."""
+
+        return bool(self.errors)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     """Build the RABDAM command-line parser."""
 
     defaults = BDamageWorkflowOptions()
     parser = argparse.ArgumentParser(
         prog="rabdam",
-        usage="%(prog)s STRUCTURE_INPUT [options]",
-        description="Run the RABDAM BDamage workflow for a structure file or PDB ID.",
+        usage="%(prog)s STRUCTURE_INPUT [STRUCTURE_INPUT ...] [options]",
+        description="Run the RABDAM BDamage workflow for structure files or PDB IDs.",
         add_help=False,
     )
     input_group = parser.add_argument_group("input")
@@ -140,10 +167,13 @@ def _build_parser() -> argparse.ArgumentParser:
     advanced = parser.add_argument_group("advanced/debugging options")
 
     input_group.add_argument(
-        "structure_input",
-        nargs="?",
+        "structure_inputs",
+        nargs="*",
         metavar="STRUCTURE_INPUT",
-        help="Path to a .pdb/.cif/.mmcif file, or a 4-character PDB ID such as 1LYZ.",
+        help=(
+            "One or more paths to .pdb/.cif/.mmcif files, or 4-character "
+            "PDB IDs such as 1LYZ."
+        ),
     )
     general.add_argument(
         "-h",
@@ -173,8 +203,20 @@ def _build_parser() -> argparse.ArgumentParser:
         "-o",
         "--output-csv",
         metavar="PATH",
-        default=str(DEFAULT_OUTPUT_CSV),
-        help=f"Path for the per-atom BDamage CSV. Default: {DEFAULT_OUTPUT_CSV}",
+        default=None,
+        help=(
+            "Path for the per-atom BDamage CSV in a single-structure run. "
+            f"Default: {DEFAULT_OUTPUT_CSV_PATTERN}"
+        ),
+    )
+    output_download.add_argument(
+        "--output-dir",
+        metavar="DIR",
+        default=str(DEFAULT_OUTPUT_DIR),
+        help=(
+            "Directory for default single-run output and batch output CSVs. "
+            f"Default: {DEFAULT_OUTPUT_DIR}"
+        ),
     )
     output_download.add_argument(
         "--download-dir",
@@ -310,7 +352,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
     parser = _build_parser()
 
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    args.structure_input = (
+        args.structure_inputs[0] if len(args.structure_inputs) == 1 else None
+    )
+    return args
 
 
 def positive_float(value: str) -> float:
@@ -397,18 +443,67 @@ def run_from_args(
     stdout: TextIO = sys.stdout,
     stderr: TextIO = sys.stderr,
     total_runtime_start: float | None = None,
-) -> RabdamCliResult:
+) -> RabdamCliResult | RabdamBatchCliResult:
     """Run the BDamage workflow from parsed command-line arguments."""
 
     if total_runtime_start is None:
         total_runtime_start = perf_counter()
+
+    structure_inputs = structure_inputs_from_args(args)
+    if not structure_inputs:
+        raise ValueError("At least one structure input is required.")
+
+    if len(structure_inputs) == 1:
+        return run_single_structure_from_args(
+            args,
+            structure_input=structure_inputs[0],
+            output_csv=single_output_csv_from_args(args),
+            stdout=stdout,
+            stderr=stderr,
+            total_runtime_start=total_runtime_start,
+        )
+
+    return run_batch_from_args(
+        args,
+        structure_inputs=structure_inputs,
+        stdout=stdout,
+        stderr=stderr,
+        total_runtime_start=total_runtime_start,
+    )
+
+
+def structure_inputs_from_args(args: argparse.Namespace) -> tuple[str, ...]:
+    """Return one or more structure inputs from current or legacy arg names."""
+
+    structure_inputs = tuple(getattr(args, "structure_inputs", ()) or ())
+    if structure_inputs:
+        return structure_inputs
+
+    structure_input = getattr(args, "structure_input", None)
+    if structure_input is None:
+        return ()
+
+    return (structure_input,)
+
+
+def run_single_structure_from_args(
+    args: argparse.Namespace,
+    *,
+    structure_input: str,
+    output_csv: Path | None,
+    stdout: TextIO,
+    stderr: TextIO,
+    total_runtime_start: float,
+    used_batch_output_paths: set[Path] | None = None,
+) -> RabdamCliResult:
+    """Run the BDamage workflow for one structure input."""
 
     workflow_options = workflow_options_from_args(args)
     preparation_options = preparation_options_from_args(args)
 
     resolved = run_stage(
         "Resolving input",
-        lambda: resolve_structure_input(args.structure_input),
+        lambda: resolve_structure_input(structure_input),
         stream=stderr,
         quiet=args.quiet,
     )
@@ -440,7 +535,13 @@ def run_from_args(
         ),
     )
 
-    output_csv = Path(args.output_csv).expanduser()
+    if output_csv is None:
+        output_csv = batch_output_csv_path(
+            local_input,
+            output_dir=Path(args.output_dir).expanduser(),
+            used_output_paths=used_batch_output_paths,
+        )
+
     run_stage(
         "Writing BDamage CSV",
         lambda: write_bdamage_csv(
@@ -494,6 +595,115 @@ def run_from_args(
         )
 
     return cli_result
+
+
+def run_batch_from_args(
+    args: argparse.Namespace,
+    *,
+    structure_inputs: tuple[str, ...],
+    stdout: TextIO,
+    stderr: TextIO,
+    total_runtime_start: float,
+) -> RabdamBatchCliResult:
+    """Run the BDamage workflow for multiple structure inputs."""
+
+    if args.output_csv is not None:
+        raise ValueError(
+            "--output-csv can only be used with one structure input. "
+            "Use --output-dir for batch runs."
+        )
+
+    output_dir = Path(args.output_dir).expanduser()
+    results: list[RabdamCliResult] = []
+    errors: list[RabdamBatchItemError] = []
+    used_output_paths: set[Path] = set()
+
+    for index, structure_input in enumerate(structure_inputs, start=1):
+        if not args.quiet:
+            print(
+                f"\nBatch item {index}/{len(structure_inputs)}: {structure_input}",
+                file=stderr,
+            )
+
+        try:
+            result = run_single_structure_from_args(
+                args,
+                structure_input=structure_input,
+                output_csv=None,
+                stdout=stdout,
+                stderr=stderr,
+                total_runtime_start=perf_counter(),
+                used_batch_output_paths=used_output_paths,
+            )
+        except RABDAM_CLI_ERRORS as error:
+            errors.append(
+                RabdamBatchItemError(
+                    structure_input=structure_input,
+                    error=error,
+                )
+            )
+            print(f"rabdam: error: {structure_input}: {error}", file=stderr)
+        else:
+            results.append(result)
+
+    elapsed_seconds = perf_counter() - total_runtime_start
+    batch_result = RabdamBatchCliResult(
+        results=tuple(results),
+        errors=tuple(errors),
+        output_dir=output_dir,
+        elapsed_seconds=elapsed_seconds,
+    )
+
+    if not args.quiet:
+        print_batch_summary(batch_result, stream=stdout)
+
+    return batch_result
+
+
+def single_output_csv_from_args(args: argparse.Namespace) -> Path | None:
+    """Return the output CSV path for a single-structure run."""
+
+    if args.output_csv is not None:
+        return Path(args.output_csv).expanduser()
+
+    return None
+
+
+def batch_output_csv_path(
+    local_input: ResolvedStructureInput,
+    *,
+    output_dir: Path,
+    used_output_paths: set[Path] | None,
+) -> Path:
+    """Return a unique batch output CSV path for one resolved input."""
+
+    label = output_label_for_input(local_input)
+    candidate = output_dir / f"{label}_BDamage.csv"
+    if used_output_paths is None:
+        return candidate
+
+    suffix = 2
+    while candidate in used_output_paths:
+        candidate = output_dir / f"{label}_{suffix}_BDamage.csv"
+        suffix += 1
+
+    used_output_paths.add(candidate)
+    return candidate
+
+
+def output_label_for_input(local_input: ResolvedStructureInput) -> str:
+    """Return a filesystem-friendly output label for a resolved input."""
+
+    if local_input.structure_id:
+        raw_label = local_input.structure_id.upper()
+    elif local_input.local_path is not None:
+        raw_label = local_input.local_path.stem
+    else:
+        raw_label = Path(local_input.original_input).stem or "structure"
+
+    label = re.sub(r"[^A-Za-z0-9._-]+", "_", raw_label.strip())
+    label = label.strip("._-")
+    return label or "structure"
 
 
 def calculate_default_bnet_percentile(
@@ -676,6 +886,27 @@ def print_summary(
     print(f"Total runtime: {total_runtime_seconds:.1f}s", file=stream)
 
 
+def print_batch_summary(
+    result: RabdamBatchCliResult,
+    *,
+    stream: TextIO,
+) -> None:
+    """Print a compact batch-run summary."""
+
+    print(file=stream)
+    print("Batch summary:", file=stream)
+    print(f"  Successful: {len(result.results)}", file=stream)
+    print(f"  Failed: {len(result.errors)}", file=stream)
+    print(f"  Output directory: {result.output_dir}", file=stream)
+
+    if result.errors:
+        print("  Failed inputs:", file=stream)
+        for item_error in result.errors:
+            print(f"    {item_error.structure_input}", file=stream)
+
+    print(f"  Total runtime: {result.elapsed_seconds:.1f}s", file=stream)
+
+
 def _format_int_values(values: Sequence[int]) -> str:
     """Return integer preview values as a comma-separated string."""
 
@@ -738,12 +969,12 @@ def main(
         print_citations(stream=stdout)
         return 0
 
-    if args.structure_input is None:
+    if not args.structure_inputs:
         print_missing_structure_input_error(stream=stderr)
         return 2
 
     try:
-        run_from_args(
+        result = run_from_args(
             args,
             stdout=stdout,
             stderr=stderr,
@@ -751,6 +982,9 @@ def main(
         )
     except RABDAM_CLI_ERRORS as error:
         print(f"rabdam: error: {error}", file=stderr)
+        return 1
+
+    if isinstance(result, RabdamBatchCliResult) and result.has_errors:
         return 1
 
     return 0
